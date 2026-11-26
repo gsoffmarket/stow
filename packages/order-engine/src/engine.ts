@@ -134,3 +134,83 @@ function compareText(a: string, b: string): number {
   if (a < b) return -1;
   return a > b ? 1 : 0;
 }
+
+/** Rejection is why a command was refused; the order is unchanged. */
+export type Rejection =
+  | "TERMINAL_ORDER"
+  | "STALE_VERSION"
+  | "REVISION_REQUIRED"
+  | "ASSIGNMENT_CONFLICT"
+  | "TASK_CHANGED"
+  | "QUANTITY_OUT_OF_RANGE"
+  | "INVALID_TRANSITION";
+
+export type Outcome = { readonly ok: true; readonly order: Order } | { readonly ok: false; readonly code: Rejection };
+
+/** Expected is the state a client last saw; any committed change since makes its command stale. */
+export type Expected = { readonly revision: number; readonly version: number };
+
+/** Confirmation is a picker saying they physically moved `quantity` units for one task. */
+export type Confirmation = Expected & { readonly kind: TaskKind; readonly lineId: string; readonly quantity: number };
+
+/**
+ * claim gives a queued order to the worker. Claiming is explicit acceptance of
+ * the current revision, so the worker starts with nothing to acknowledge.
+ */
+export function claim(order: Order, workerId: string, toteId: string | null, expected: Expected): Outcome {
+  const stale = checkFresh(order, expected);
+  if (stale) return stale;
+  if (order.assignment) return { ok: false, code: "ASSIGNMENT_CONFLICT" };
+  const assignment = { workerId, toteId, isAccepted: true, ackRevision: order.revision };
+  return { ok: true, order: { ...order, assignment, version: order.version + 1 } };
+}
+
+/**
+ * confirm applies a pick or return, but only for the exact task the planner
+ * would show now. A tap on a screen rendered before a revision fails here
+ * instead of counting against the new plan.
+ */
+export function confirm(order: Order, workerId: string, confirmation: Confirmation): Outcome {
+  const stale = checkFresh(order, confirmation);
+  if (stale) return stale;
+  const next = plan(order, workerId);
+  if (next.kind === "CONFLICT" || next.kind === "OFFER") return { ok: false, code: "ASSIGNMENT_CONFLICT" };
+  if (next.kind !== "TASK" || next.task.kind !== confirmation.kind || next.task.lineId !== confirmation.lineId) {
+    return { ok: false, code: "TASK_CHANGED" };
+  }
+  const quantity = confirmation.quantity;
+  if (!Number.isInteger(quantity) || quantity < 1 || quantity > next.task.quantity) {
+    return { ok: false, code: "QUANTITY_OUT_OF_RANGE" };
+  }
+  const delta = confirmation.kind === "PICK" ? quantity : -quantity;
+  const lines = order.lines.map((line) =>
+    line.id === confirmation.lineId ? { ...line, picked: line.picked + delta } : line,
+  );
+  return { ok: true, order: assertInvariants({ ...order, lines, version: order.version + 1 }) };
+}
+
+/** complete closes a fully picked order; it is the picker's explicit final action. */
+export function complete(order: Order, workerId: string, expected: Expected): Outcome {
+  const stale = checkFresh(order, expected);
+  if (stale) return stale;
+  if (plan(order, workerId).kind !== "REVIEW_COMPLETE") return { ok: false, code: "INVALID_TRANSITION" };
+  return { ok: true, order: { ...order, terminal: "COMPLETED", version: order.version + 1 } };
+}
+
+function checkFresh(order: Order, expected: Expected): Outcome | null {
+  if (order.terminal) return { ok: false, code: "TERMINAL_ORDER" };
+  if (expected.revision !== order.revision) return { ok: false, code: "REVISION_REQUIRED" };
+  if (expected.version !== order.version) return { ok: false, code: "STALE_VERSION" };
+  return null;
+}
+
+// A violated invariant here is a bug in this module, not bad input, so it
+// throws rather than returning a rejection.
+function assertInvariants(order: Order): Order {
+  for (const line of order.lines) {
+    if (!Number.isInteger(line.picked) || line.picked < 0) {
+      throw new Error(`order ${order.id} line ${line.id}: picked is ${line.picked}, must be a non-negative integer`);
+    }
+  }
+  return order;
+}

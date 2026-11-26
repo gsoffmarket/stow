@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { plan, type Line, type Order } from "./engine.ts";
+import { claim, complete, confirm, plan, type Line, type Order } from "./engine.ts";
 
 const worker = "worker-1";
 
@@ -105,5 +105,62 @@ describe("route order", () => {
     const order2 = order([...lines].reverse());
     expect(plan(order1, worker)).toMatchObject({ task: { lineId: "first" } });
     expect(plan(order2, worker)).toMatchObject({ task: { lineId: "first" } });
+  });
+});
+
+describe("claim", () => {
+  test("gives an unassigned order to the worker with the current revision acknowledged", () => {
+    const got = claim(order([line("a", 3, 0)], { assignment: null }), worker, "A", { revision: 2, version: 7 });
+    expect(got).toMatchObject({ ok: true, order: { version: 8, assignment: { workerId: worker, isAccepted: true, ackRevision: 2 } } });
+  });
+
+  test("rejects an order someone already holds", () => {
+    expect(claim(order([line("a", 3, 0)]), "worker-2", "B", { revision: 2, version: 7 })).toEqual({ ok: false, code: "ASSIGNMENT_CONFLICT" });
+  });
+});
+
+describe("confirm", () => {
+  const fresh = { revision: 2, version: 7 };
+
+  test("a pick adds the confirmed units and bumps the version", () => {
+    const got = confirm(order([line("a", 3, 0)]), worker, { ...fresh, kind: "PICK", lineId: "a", quantity: 2 });
+    expect(got).toMatchObject({ ok: true, order: { version: 8, lines: [{ picked: 2 }] } });
+  });
+
+  test("a return removes units from the tote", () => {
+    const got = confirm(order([line("a", 1, 3)]), worker, { ...fresh, kind: "RETURN", lineId: "a", quantity: 2 });
+    expect(got).toMatchObject({ ok: true, order: { lines: [{ picked: 1 }] } });
+  });
+
+  test.each([
+    { name: "terminal order", overrides: { terminal: "CANCELLED" as const }, c: {}, code: "TERMINAL_ORDER" },
+    { name: "older revision", overrides: {}, c: { revision: 1 }, code: "REVISION_REQUIRED" },
+    { name: "older version", overrides: {}, c: { version: 6 }, code: "STALE_VERSION" },
+    {
+      name: "another worker's order",
+      overrides: { assignment: { workerId: "worker-2", toteId: "B", isAccepted: true, ackRevision: 2 } },
+      c: {},
+      code: "ASSIGNMENT_CONFLICT",
+    },
+    { name: "pick while a return is due", overrides: {}, lines: [line("a", 1, 3)], c: {}, code: "TASK_CHANGED" },
+    { name: "a line that is not the current task", overrides: {}, c: { lineId: "b" }, code: "TASK_CHANGED" },
+    { name: "zero units", overrides: {}, c: { quantity: 0 }, code: "QUANTITY_OUT_OF_RANGE" },
+    { name: "more than outstanding", overrides: {}, c: { quantity: 4 }, code: "QUANTITY_OUT_OF_RANGE" },
+    { name: "a fractional quantity", overrides: {}, c: { quantity: 1.5 }, code: "QUANTITY_OUT_OF_RANGE" },
+  ])("rejects $name without changing the order", ({ overrides, lines, c, code }) => {
+    const before = order(lines ?? [line("a", 3, 0), line("b", 2, 0, { routeRank: 9 })], overrides);
+    const got = confirm(before, worker, { ...fresh, kind: "PICK", lineId: "a", quantity: 1, ...c });
+    expect(got).toEqual({ ok: false, code });
+  });
+});
+
+describe("complete", () => {
+  test("closes an order once every line is picked", () => {
+    const got = complete(order([line("a", 2, 2)]), worker, { revision: 2, version: 7 });
+    expect(got).toMatchObject({ ok: true, order: { terminal: "COMPLETED", version: 8 } });
+  });
+
+  test("refuses while work is outstanding", () => {
+    expect(complete(order([line("a", 2, 1)]), worker, { revision: 2, version: 7 })).toEqual({ ok: false, code: "INVALID_TRANSITION" });
   });
 });
