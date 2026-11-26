@@ -8,7 +8,10 @@
   },
   "scripts": {
     "typecheck": "tsc -b",
-    "test": "vitest run"
+    "test": "vitest run",
+    "setup:local": "pnpm --filter @stow/api setup:local",
+    "order:local": "pnpm --filter @stow/api order:local",
+    "dev": "pnpm --parallel --filter @stow/api --filter @stow/glasses dev"
   },
   "devDependencies": {
     "@types/node": "^24.19.4",

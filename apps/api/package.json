@@ -5,7 +5,9 @@
   "scripts": {
     "start": "node src/main.ts",
     "dev": "node --watch --env-file-if-exists=../../.env.local src/main.ts",
-    "migrate": "node --env-file-if-exists=../../.env.local src/db/migrate.ts"
+    "migrate": "node --env-file-if-exists=../../.env.local src/db/migrate.ts",
+    "setup:local": "node src/local.ts setup",
+    "order:local": "node src/local.ts order"
   },
   "dependencies": {
     "@stow/order-engine": "workspace:*",

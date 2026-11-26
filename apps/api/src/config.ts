@@ -21,7 +21,9 @@ export type Config = z.infer<typeof schema>;
 
 /** loadConfig parses env, naming every invalid variable but never echoing its value. */
 export function loadConfig(env: NodeJS.ProcessEnv): Config {
-  const parsed = schema.safeParse(env);
+  // `KEY=` in an env file means "not set", so empty values count as missing.
+  const present = Object.fromEntries(Object.entries(env).filter(([, value]) => value !== ""));
+  const parsed = schema.safeParse(present);
   if (parsed.success) return parsed.data;
   const problems = parsed.error.issues.map((issue) => `${issue.path.join(".")}: ${issue.message}`);
   throw new Error(`invalid configuration: ${problems.join("; ")}`);
