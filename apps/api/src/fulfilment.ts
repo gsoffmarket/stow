@@ -15,6 +15,7 @@ import {
   acknowledge,
   acknowledgeResolution,
   batchLimits,
+  cancelRelease,
   claim,
   closeCancelled,
   complete,
@@ -22,6 +23,8 @@ import {
   pause,
   plan,
   planBatch,
+  prepareRelease,
+  release,
   report,
   requestCancel,
   resolve,
@@ -63,7 +66,7 @@ export type Command = Expected &
   (
     | { readonly type: "CLAIM_ORDER"; readonly toteId: string | null }
     | { readonly type: "CONFIRM_TASK"; readonly kind: TaskKind; readonly lineId: string; readonly quantity: number }
-    | { readonly type: "COMPLETE_ORDER" | "ACK_REVISION" | "PAUSE_ORDER" | "RESUME_ORDER" | "CLOSE_CANCELLED" }
+    | { readonly type: "COMPLETE_ORDER" | "ACK_REVISION" | "PAUSE_ORDER" | "RESUME_ORDER" | "CLOSE_CANCELLED" | "PREPARE_RELEASE" | "CANCEL_RELEASE" | "RELEASE_ORDER" }
     | { readonly type: "REPORT_EXCEPTION"; readonly exceptionType: ExceptionType; readonly reportedQty: number | null }
     | { readonly type: "ACK_RESOLUTION"; readonly exceptionId: string }
     | { readonly type: "REVISE_ORDER"; readonly reason: string; readonly changes: readonly RevisionChange[] }
@@ -249,6 +252,12 @@ function apply(order: Order, memberId: string, command: Command, products: Map<s
       return resume(order, memberId, expected);
     case "CLOSE_CANCELLED":
       return closeCancelled(order, memberId, expected);
+    case "PREPARE_RELEASE":
+      return prepareRelease(order, memberId, expected);
+    case "CANCEL_RELEASE":
+      return cancelRelease(order, memberId, expected);
+    case "RELEASE_ORDER":
+      return release(order, memberId, expected);
     case "REPORT_EXCEPTION":
       return report(order, memberId, { exceptionId: randomUUID(), type: command.exceptionType, reportedQty: command.reportedQty }, expected);
     case "ACK_RESOLUTION":
@@ -276,6 +285,9 @@ const eventTypes: Record<Exclude<Command["type"], "CONFIRM_TASK">, string> = {
   PAUSE_ORDER: "ORDER_PAUSED",
   RESUME_ORDER: "ORDER_RESUMED",
   CLOSE_CANCELLED: "ORDER_CANCELLED",
+  PREPARE_RELEASE: "RELEASE_REQUESTED",
+  CANCEL_RELEASE: "RELEASE_CANCELLED",
+  RELEASE_ORDER: "ORDER_RELEASED",
   REPORT_EXCEPTION: "EXCEPTION_REPORTED",
   ACK_RESOLUTION: "RESOLUTION_ACKNOWLEDGED",
   REVISE_ORDER: "ORDER_REVISED",
@@ -666,6 +678,8 @@ async function saveOrder(client: pg.ClientBase, actor: Actor, before: Order, aft
       "insert into assignments (workspace_id, order_id, worker_id, tote_id, is_accepted, ack_revision) values ($1, $2, $3, $4, true, $5)",
       [ws, after.id, after.assignment.workerId, after.assignment.toteId, after.assignment.ackRevision],
     );
+  } else if (before.assignment && !after.assignment) {
+    await client.query("update assignments set released_at = now() where workspace_id = $1 and order_id = $2 and released_at is null", [ws, after.id]);
   } else if (before.assignment && after.assignment && before.assignment.ackRevision !== after.assignment.ackRevision) {
     await client.query("update assignments set ack_revision = $3 where workspace_id = $1 and order_id = $2 and released_at is null", [ws, after.id, after.assignment.ackRevision]);
   }

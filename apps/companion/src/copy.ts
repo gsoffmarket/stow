@@ -40,6 +40,7 @@ export const copy = {
     AWAITING_PICKER: "Awaiting picker",
     BLOCKED: "Blocked",
     CANCELLING: "Cancelling",
+    RELEASING: "Releasing",
     PAUSED: "Paused",
   } satisfies Record<Hold, string>,
   phase: { QUEUED: "Queued", PICKING: "Picking", COMPLETED: "Completed", CANCELLED: "Cancelled" },

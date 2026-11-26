@@ -90,7 +90,7 @@ const commandBody = z.discriminatedUnion("type", [
       quantity: z.number().int().min(1).max(10_000),
     }),
   }),
-  z.strictObject({ commandId: uuid, type: z.enum(["COMPLETE_ORDER", "ACK_REVISION", "PAUSE_ORDER", "RESUME_ORDER", "CLOSE_CANCELLED"]), ...expected, payload: z.strictObject({}) }),
+  z.strictObject({ commandId: uuid, type: z.enum(["COMPLETE_ORDER", "ACK_REVISION", "PAUSE_ORDER", "RESUME_ORDER", "CLOSE_CANCELLED", "PREPARE_RELEASE", "CANCEL_RELEASE", "RELEASE_ORDER"]), ...expected, payload: z.strictObject({}) }),
   z.strictObject({ commandId: uuid, type: z.literal("ACK_RESOLUTION"), ...expected, payload: z.strictObject({ exceptionId: uuid }) }),
   z.strictObject({
     commandId: uuid,
@@ -449,6 +449,7 @@ function orderJson(order: Order) {
     version: String(order.version),
     terminal: order.terminal,
     isCancelRequested: order.isCancelRequested,
+    isReleaseRequested: order.isReleaseRequested,
     toteId: order.assignment?.toteId ?? null,
     lines: order.lines.map((line) => ({
       id: line.id,

@@ -49,7 +49,7 @@ export function approvePairing(token: string, workspaceId: string, code: string)
   return call("/v1/devices/pairings/approve", { method: "POST", token, body: { workspaceId, code } });
 }
 
-export type Hold = "NONE" | "AWAITING_PICKER" | "BLOCKED" | "CANCELLING" | "PAUSED";
+export type Hold = "NONE" | "AWAITING_PICKER" | "BLOCKED" | "CANCELLING" | "RELEASING" | "PAUSED";
 
 export type OrderRow = {
   id: string;
