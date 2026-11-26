@@ -214,3 +214,45 @@ describe("creating an order from the console", () => {
     expect((await create({ commandId: randomUUID(), ref: null, lines: [{ sku: "CP-WHT", quantity: 1 }] }, pickerHeaders)).statusCode).toBe(404);
   });
 });
+
+describe("searching and paging the order list", () => {
+  let otherWorkspace: string;
+  let headers: Record<string, string>;
+  type Page = { orders: { ref: string }[]; next: string | null };
+  const list = async (query: string): Promise<Page> => (await get(`/v1/workspaces/${otherWorkspace}/orders?${query}`, headers)).json().data;
+
+  beforeAll(async () => {
+    otherWorkspace = (await db.pool.query<{ id: string }>("insert into workspaces (name) values ('Paging') returning id")).rows[0]!.id;
+    const coordinatorId = (await db.pool.query<{ id: string }>("insert into members (workspace_id, display_name, role, telegram_user_id) values ($1, 'Pager', 'COORDINATOR', '300') returning id", [otherWorkspace])).rows[0]!.id;
+    await db.pool.query("insert into products (workspace_id, sku, normalized_sku, name) values ($1, 'MUG-1', 'MUG-1', 'Mug'), ($1, 'PEN_2', 'PEN_2', 'Pen')", [otherWorkspace]);
+    for (let n = 1; n <= 52; n++) {
+      await createOrder(db.pool, {
+        workspaceId: otherWorkspace, createdBy: coordinatorId, sourceKey: `test:${randomUUID()}`, connectionId: null, sourceMessageId: null,
+        request: { ref: `PG-${n}`, lines: [{ sku: n === 7 ? "PEN_2" : "MUG-1", quantity: 1 }] },
+      });
+    }
+    const session = await app.inject({ method: "POST", url: "/v1/telegram/miniapp/session", payload: { initData: launchData(300) } });
+    headers = { authorization: `Bearer ${session.json().data.token}` };
+  });
+
+  test("pages through every order once, newest first", async () => {
+    const first = await list("view=active");
+    const second = await list(`view=active&cursor=${first.next}`);
+    const refs = [...first.orders, ...second.orders].map((order) => order.ref);
+    expect({ first: first.orders.length, second: second.orders.length, next: second.next, unique: new Set(refs).size, newest: refs[0] }).toEqual({ first: 50, second: 2, next: null, unique: 52, newest: "PG-52" });
+  });
+
+  test.each([
+    { name: "part of a reference", q: "pg-5", refs: ["PG-52", "PG-51", "PG-50", "PG-5"] },
+    { name: "a SKU on a line", q: "pen", refs: ["PG-7"] },
+    { name: "an underscore as itself, not a wildcard", q: "PG_5", refs: [] },
+    { name: "nothing", q: "zzz", refs: [] },
+  ])("finds orders by $name", async ({ q, refs }) => {
+    expect((await list(`view=active&q=${encodeURIComponent(q)}`)).orders.map((order) => order.ref)).toEqual(refs);
+  });
+
+  test("refuses a cursor it did not issue", async () => {
+    const refused = await get(`/v1/workspaces/${otherWorkspace}/orders?view=active&cursor=bm9wZQ`, headers);
+    expect({ status: refused.statusCode, code: refused.json().error.code }).toEqual({ status: 400, code: "INVALID_CURSOR" });
+  });
+});

@@ -26,14 +26,16 @@ export function PrimaryButton({ children, onClick, disabled, type = "button" }: 
   );
 }
 
-export function GhostButton({ children, onClick, type = "button" }: ButtonProps) {
+/** GhostButton is a secondary action, outlined so the primary one stays the only fill. */
+export function GhostButton({ children, onClick, disabled, type = "button" }: ButtonProps) {
   return (
     <m.button
       type={type}
       onClick={onClick}
-      whileTap={{ scale: 0.98 }}
+      disabled={disabled}
+      whileTap={disabled ? {} : { scale: 0.98 }}
       transition={press}
-      className="w-full min-h-11 rounded-[var(--radius-control)] border border-border-strong px-4 py-3 text-[15px] font-medium text-text-primary"
+      className="w-full min-h-11 rounded-[var(--radius-control)] border border-border-strong px-4 py-3 text-[15px] font-medium text-text-primary disabled:opacity-50"
     >
       {children}
     </m.button>

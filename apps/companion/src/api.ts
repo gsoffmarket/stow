@@ -85,8 +85,14 @@ export type ConsoleCommand =
   | { type: "ASSIGN_ORDER"; payload: { memberId: string } }
   | { type: "RESOLVE_EXCEPTION"; payload: { reason: string; resolution: Resolution } };
 
-export function listOrders(token: string, workspaceId: string, view: View): Promise<{ orders: OrderRow[] }> {
-  return call(`/v1/workspaces/${workspaceId}/orders?view=${view}`, { method: "GET", token });
+/** OrderPage is one page of a list; next is an opaque cursor, null on the last page. */
+export type OrderPage = { orders: OrderRow[]; next: string | null };
+
+export function listOrders(token: string, workspaceId: string, view: View, search: string, cursor: string | null = null): Promise<OrderPage> {
+  const query = new URLSearchParams({ view });
+  if (search) query.set("q", search);
+  if (cursor) query.set("cursor", cursor);
+  return call(`/v1/workspaces/${workspaceId}/orders?${query}`, { method: "GET", token });
 }
 
 export function getOrder(token: string, workspaceId: string, orderId: string): Promise<OrderDetail> {

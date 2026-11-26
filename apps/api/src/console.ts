@@ -30,20 +30,48 @@ export type View = "needs_you" | "active" | "done";
 const filters: Record<View, string> = {
   needs_you: "o.terminal is null and exists (select 1 from order_exceptions e where e.order_id = o.id and e.status = 'OPEN')",
   active: "o.terminal is null",
-  done: "o.terminal is not null and o.updated_at > now() - interval '7 days'",
+  done: "o.terminal is not null",
 };
 
-const pageSize = 50;
+/** pageSize is how many orders one list request returns at most. */
+export const pageSize = 50;
 
-/** listOrders returns up to one page of a workspace's orders for a view, newest activity first. */
-export function listOrders(pool: pg.Pool, workspaceId: string, view: View): Promise<OrderRow[]> {
-  return selectOrders(pool, workspaceId, filters[view], []);
+/** Cursor is the last row of a page in list order. */
+export type Cursor = { readonly updatedAt: string; readonly id: string };
+
+/** OrderQuery narrows a list: a search over ref, SKU and picker, and where the previous page ended. */
+export type OrderQuery = { readonly view: View; readonly search: string | null; readonly after: Cursor | null };
+
+/**
+ * listOrders returns one page of a workspace's orders, newest activity first,
+ * and a cursor when there may be more. Paging is by (updated_at, id), so a
+ * page never repeats or skips an order that did not change in between.
+ */
+export async function listOrders(pool: pg.Pool, workspaceId: string, query: OrderQuery): Promise<{ orders: OrderRow[]; next: Cursor | null }> {
+  const conditions = [filters[query.view]];
+  const params: unknown[] = [];
+  if (query.search) {
+    // ilike treats % and _ as wildcards; a search for "A_1" means those characters.
+    params.push(`%${query.search.replace(/[\\%_]/g, (character) => `\\${character}`)}%`);
+    const search = `$${params.length + 1}`;
+    conditions.push(`(o.ref ilike ${search} or m.display_name ilike ${search} or exists (select 1 from order_lines s where s.order_id = o.id and s.sku_snapshot ilike ${search}))`);
+  }
+  if (query.after) {
+    // The cursor came back through a JS Date, which keeps milliseconds only;
+    // the sort truncates the same way so the comparison is exact.
+    params.push(query.after.updatedAt, query.after.id);
+    conditions.push(`(date_trunc('milliseconds', o.updated_at), o.id) < ($${params.length}::timestamptz, $${params.length + 1}::uuid)`);
+  }
+  const rows = await selectOrders(pool, workspaceId, conditions.join(" and "), params, pageSize + 1);
+  const page = rows.slice(0, pageSize);
+  const last = page.at(-1);
+  return { orders: page, next: rows.length > pageSize && last ? { updatedAt: last.updatedAt, id: last.id } : null };
 }
 
 type Queryable = Pick<pg.ClientBase, "query">;
 
 // One query shape for the list and the detail header, so they always agree.
-async function selectOrders(db: Queryable, workspaceId: string, condition: string, params: unknown[]): Promise<OrderRow[]> {
+async function selectOrders(db: Queryable, workspaceId: string, condition: string, params: unknown[], limit = 1): Promise<OrderRow[]> {
   const { rows } = await db.query<{
     id: string; ref: string; terminal: OrderRow["terminal"]; revision: number; created_at: Date; updated_at: Date;
     picker: string | null; tote_id: string | null; ack_revision: number | null; is_accepted: boolean | null; is_paused: boolean; is_cancel_requested: boolean; is_release_requested: boolean;
@@ -61,7 +89,7 @@ async function selectOrders(db: Queryable, workspaceId: string, condition: strin
        from order_lines where order_id = o.id
      ) l
      where o.workspace_id = $1 and ${condition}
-     order by o.updated_at desc, o.id limit ${pageSize}`,
+     order by date_trunc('milliseconds', o.updated_at) desc, o.id desc limit ${limit}`,
     [workspaceId, ...params],
   );
   return rows.map((row) => ({
