@@ -15,7 +15,7 @@ import {
   waitForEvenAppBridge,
   type EvenAppBridge,
 } from "@evenrealities/even_hub_sdk";
-import { screenFor, type Action, type Link, type Screen, type Snapshot } from "./screens.ts";
+import { moreScreen, screenFor, type Action, type Link, type Screen, type Snapshot } from "./screens.ts";
 
 const apiUrl = import.meta.env.VITE_STOW_API_URL as string;
 const workspaceId = import.meta.env.VITE_STOW_WORKSPACE_ID as string;
@@ -43,6 +43,12 @@ let pending: Pending | null = null;
 let shown: Screen | null = null;
 let lastTap_ms = 0;
 let isForeground = true;
+// The closed order the worker has tapped past; its Saved screen stays until then.
+let dismissedRef: string | null = null;
+// Cursor on the More screen, or null when it is closed. It closes whenever
+// the underlying screen changes, so it can never act on a stale task.
+let moreCursor: number | null = null;
+let base: Screen | null = null;
 let bridgeQueue: Promise<unknown> = Promise.resolve();
 
 // Every bridge call goes through here, one at a time, each with a deadline.
@@ -58,7 +64,10 @@ function onBridge<T>(call: () => Promise<T>): Promise<T> {
 }
 
 async function render(): Promise<void> {
-  const next = screenFor(snapshot, link);
+  const underlying = screenFor(snapshot, link, dismissedRef);
+  if (base && (underlying.header !== base.header || underlying.body !== base.body)) moreCursor = null;
+  base = underlying;
+  const next = moreCursor !== null && underlying.options.length > 0 ? moreScreen(underlying, snapshot?.order?.ref ?? "STOW", moreCursor) : underlying;
   const texts = { header: next.header, body: next.body, footer: next.footer };
   if (!shown) {
     const textObject = regions.map(
@@ -140,6 +149,18 @@ function commandFor(action: Action): object | null {
       return { type: "CLAIM_ORDER", ...expected, payload: { toteId: "A" } };
     case "COMPLETE":
       return { type: "COMPLETE_ORDER", ...expected, payload: {} };
+    case "ACK_REVISION":
+      return { type: "ACK_REVISION", ...expected, payload: {} };
+    case "PAUSE":
+      return { type: "PAUSE_ORDER", ...expected, payload: {} };
+    case "RESUME":
+      return { type: "RESUME_ORDER", ...expected, payload: {} };
+    case "CLOSE_CANCELLED":
+      return { type: "CLOSE_CANCELLED", ...expected, payload: {} };
+    case "ACK_RESOLUTION":
+      return { type: "ACK_RESOLUTION", ...expected, payload: { exceptionId: action.exceptionId } };
+    case "REPORT":
+      return { type: "REPORT_EXCEPTION", ...expected, payload: { type: action.report, reportedQty: null } };
     case "CONFIRM":
       if (plan.kind !== "TASK") return null;
       return {
@@ -148,17 +169,27 @@ function commandFor(action: Action): object | null {
         payload: { taskToken: plan.taskToken, kind: plan.task.kind, lineId: plan.task.lineId, quantity: action.quantity },
       };
     case "REFRESH":
+    case "DISMISS":
+    case "BACK":
       return null;
   }
 }
 
-async function onPrimaryTap(): Promise<void> {
+async function perform(action: Action | null | undefined): Promise<void> {
   const now = performance.now();
   if (now - lastTap_ms < tapDebounce_ms || link === "saving") return;
   lastTap_ms = now;
   if (link === "uncertain" && pending) return send(pending);
-  const action = shown?.primary;
   if (!action) return;
+  if (action.type === "BACK") {
+    moreCursor = null;
+    return render();
+  }
+  moreCursor = null;
+  if (action.type === "DISMISS") {
+    dismissedRef = snapshot?.lastCompleted?.ref ?? null;
+    return render();
+  }
   const body = commandFor(action);
   if (!body) return refresh();
   return send({ commandId: crypto.randomUUID(), body });
@@ -166,11 +197,20 @@ async function onPrimaryTap(): Promise<void> {
 
 function listen(): void {
   bridge.onEvenHubEvent((event) => {
+    // Swipes on a text container arrive as textEvent: 1 is up, 2 is down.
+    const scroll = event.textEvent?.eventType;
+    if (scroll === OsEventTypeList.SCROLL_TOP_EVENT || scroll === OsEventTypeList.SCROLL_BOTTOM_EVENT) {
+      if (!base || base.options.length === 0 || link !== "online") return;
+      const step = scroll === OsEventTypeList.SCROLL_BOTTOM_EVENT ? 1 : -1;
+      moreCursor = moreCursor === null ? 0 : moreCursor + step;
+      void render();
+      return;
+    }
     const system = event.sysEvent;
     if (!system) return;
     // Protobuf drops zero values, so a single tap arrives with no eventType.
     const type = system.eventType ?? OsEventTypeList.CLICK_EVENT;
-    if (type === OsEventTypeList.CLICK_EVENT) void onPrimaryTap();
+    if (type === OsEventTypeList.CLICK_EVENT) void perform(shown?.primary);
     else if (type === OsEventTypeList.DOUBLE_CLICK_EVENT) void onBridge(() => bridge.shutDownPageContainer(1));
     else if (type === OsEventTypeList.FOREGROUND_ENTER_EVENT) {
       isForeground = true;

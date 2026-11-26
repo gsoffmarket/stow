@@ -196,6 +196,7 @@ function orderJson(order: Order) {
     revision: order.revision,
     version: String(order.version),
     terminal: order.terminal,
+    isCancelRequested: order.isCancelRequested,
     toteId: order.assignment?.toteId ?? null,
     lines: order.lines.map((line) => ({
       id: line.id,

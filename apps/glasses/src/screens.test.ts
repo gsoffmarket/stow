@@ -1,55 +1,133 @@
 import { describe, expect, test } from "vitest";
-import { screenFor, type Snapshot } from "./screens.ts";
+import { moreScreen, screenFor, type Snapshot } from "./screens.ts";
 
-const order = { id: "o1", ref: "ST-1042", revision: 1, version: "3", toteId: "A" };
+const order = { id: "o1", ref: "ST-1042", revision: 2, version: "7", isCancelRequested: false, toteId: "A" };
+const empty = { changes: [], decision: null, lastCompleted: null };
 
-function taskSnapshot(kind: "PICK" | "RETURN", bin: string | null = "A-03"): Snapshot {
+function snapshot(plan: Snapshot["plan"], extra: Partial<Snapshot> = {}): Snapshot {
+  return { workspaceId: "w", cursor: "9", order, plan, ...empty, ...extra };
+}
+
+function task(kind: "PICK" | "RETURN", bin: string | null = "A-03"): Snapshot["plan"] {
   return {
-    workspaceId: "w",
-    cursor: "9",
-    order,
-    plan: {
-      kind: "TASK",
-      taskToken: "t",
-      task: { kind, lineId: "l1", quantity: 3, revision: 1, version: "3", orderRef: "ST-1042", sku: "TS-BLK-M", name: "Black T-shirt", bin, toteId: "A" },
-      progress: { confirmed: 0, requested: 6 },
-    },
+    kind: "TASK",
+    taskToken: "t",
+    task: { kind, lineId: "l1", quantity: 3, revision: 2, version: "7", orderRef: "ST-1042", sku: "TS-BLK-M", name: "Black T-shirt", bin, toteId: "A" },
+    progress: { confirmed: 0, requested: 6 },
   };
 }
 
-describe("screenFor", () => {
-  test("a pick shows bin, item, SKU and quantity, and a tap confirms the shown quantity", () => {
-    expect(screenFor(taskSnapshot("PICK"), "online")).toEqual({
+describe("tasks", () => {
+  test("a pick shows bin, item, SKU and quantity; tap confirms it; swipe offers reports and pause", () => {
+    const screen = screenFor(snapshot(task("PICK")), "online");
+    expect(screen).toMatchObject({
       header: "ST-1042   TOTE A   0/6",
       body: "BIN A-03\nBLACK T-SHIRT\nTS-BLK-M\n\nPICK × 3",
-      footer: "TAP TO CONFIRM",
       primary: { type: "CONFIRM", quantity: 3 },
     });
+    expect(screen.options.map((option) => option.label)).toEqual(["REPORT SHORTAGE", "DAMAGED ITEM", "WRONG LOCATION", "PAUSE ORDER"]);
   });
 
-  test("a return says RETURN and asks for the actual return", () => {
-    const screen = screenFor(taskSnapshot("RETURN"), "online");
-    expect(screen.body).toContain("RETURN × 3");
+  test("a return says RETURN, never PICK -1, and asks for the actual return", () => {
+    const screen = screenFor(snapshot(task("RETURN")), "online");
+    expect(screen.body).toBe("RETURN × 3\nBLACK T-SHIRT\nBIN A-03 · TS-BLK-M");
     expect(screen.footer).toBe("TAP TO CONFIRM ACTUAL RETURN");
+    expect(screen.options[0]).toEqual({ label: "CANNOT RETURN", action: { type: "REPORT", report: "RETURN_BLOCKED" } });
+  });
+
+  test("a return during cancellation says why", () => {
+    const cancelling = snapshot(task("RETURN"), { order: { ...order, isCancelRequested: true } });
+    expect(screenFor(cancelling, "online").body.split("\n")[0]).toBe("CANCELLED — RETURN REQUIRED");
   });
 
   test("a missing bin is said out loud, never invented", () => {
-    expect(screenFor(taskSnapshot("PICK", null), "online").body).toMatch(/^LOCATION NOT SET/);
+    expect(screenFor(snapshot(task("PICK", null)), "online").body).toMatch(/^LOCATION NOT SET/);
+  });
+});
+
+describe("changes", () => {
+  test("a revision stops the picker and lists each change with any return", () => {
+    const revised = snapshot(
+      { kind: "REVISION_ACK", fromRevision: 1, toRevision: 2 },
+      { changes: [{ sku: "CP-WHT", from: 2, to: 4, picked: 0 }, { sku: "TS-BLK-M", from: 3, to: 1, picked: 3 }] },
+    );
+    expect(screenFor(revised, "online")).toMatchObject({
+      header: "ST-1042   REVISION 2",
+      body: "STOP — ORDER CHANGED\nCP-WHT  2 → 4\nTS-BLK-M  3 → 1 · RETURN 2",
+      footer: "TAP TO ACKNOWLEDGE",
+      primary: { type: "ACK_REVISION" },
+      options: [],
+    });
   });
 
+  test.each([
+    { decision: { resolution: "REDUCE", sku: "CP-WHT", target: 2 }, body: "REDUCED: CP-WHT → 2" },
+    { decision: { resolution: "RESUME", sku: "CP-WHT", target: 4 }, body: "CARRY ON AS ORDERED" },
+    { decision: { resolution: "CANCEL", sku: "CP-WHT", target: 0 }, body: "ORDER CANCELLED\nReturn everything in the tote." },
+  ])("a $decision.resolution decision is shown before work continues", ({ decision, body }) => {
+    const decided = snapshot({ kind: "RESOLUTION_ACK", exceptionId: "x" }, { decision });
+    expect(screenFor(decided, "online")).toMatchObject({ body, primary: { type: "ACK_RESOLUTION", exceptionId: "x" } });
+  });
+
+  test("while blocked, the picker is told to wait and nothing can be confirmed", () => {
+    const screen = screenFor(snapshot({ kind: "BLOCKED", exceptionId: "x" }), "online");
+    expect(screen.body).toMatch(/^PROBLEM REPORTED/);
+    expect(screen.primary).toEqual({ type: "REFRESH" });
+  });
+
+  test("paused resumes on tap; a cancelled order is closed once empty", () => {
+    expect(screenFor(snapshot({ kind: "PAUSED" }), "online").primary).toEqual({ type: "RESUME" });
+    expect(screenFor(snapshot({ kind: "REVIEW_CANCEL" }), "online").primary).toEqual({ type: "CLOSE_CANCELLED" });
+  });
+});
+
+describe("after closing an order", () => {
+  const closed = { ref: "ST-1042", terminal: "COMPLETED" as const, units: 5, delivery: "PENDING" as const };
+
+  test("says it is saved and whether Telegram has it, before offering the next order", () => {
+    const next = snapshot({ kind: "OFFER" }, { order: { ...order, ref: "ST-1043" }, lastCompleted: closed });
+    expect(screenFor(next, "online")).toMatchObject({
+      header: "ST-1042   COMPLETED",
+      body: "SAVED\n5 units confirmed\nTELEGRAM: PENDING",
+      primary: { type: "DISMISS" },
+    });
+    expect(screenFor(next, "online", "ST-1042").primary).toEqual({ type: "CLAIM" });
+  });
+
+  test("an unconfirmed delivery is not called sent", () => {
+    const uncertain = snapshot({ kind: "QUEUE_EMPTY" }, { lastCompleted: { ...closed, delivery: "UNCERTAIN" } });
+    expect(screenFor(uncertain, "online").body).toContain("TELEGRAM: NOT CONFIRMED");
+  });
+});
+
+describe("connection states", () => {
   test.each([
     { link: "saving" as const, body: /^SAVING/, primary: null },
     { link: "offline" as const, body: /^NOT CONNECTED/, primary: { type: "REFRESH" } },
     { link: "uncertain" as const, body: /^OUTCOME UNKNOWN/, primary: { type: "REFRESH" } },
     { link: "rejected" as const, body: /^NOT SAVED/, primary: { type: "REFRESH" } },
   ])("$link replaces the task so nothing can be confirmed against stale data", ({ link, body, primary }) => {
-    const screen = screenFor(taskSnapshot("PICK"), link);
+    const screen = screenFor(snapshot(task("PICK")), link);
     expect(screen.body).toMatch(body);
     expect(screen.primary).toEqual(primary);
+    expect(screen.options).toEqual([]);
+  });
+});
+
+describe("the More screen", () => {
+  const base = screenFor(snapshot(task("PICK")), "online");
+
+  test("lists the options with a cursor, ending in Back, and tap chooses the one under it", () => {
+    expect(moreScreen(base, "ST-1042", 0)).toMatchObject({
+      header: "ST-1042   MORE",
+      body: "> REPORT SHORTAGE\n  DAMAGED ITEM\n  WRONG LOCATION\n  PAUSE ORDER\n  BACK",
+      primary: { type: "REPORT", report: "SHORTAGE" },
+    });
+    expect(moreScreen(base, "ST-1042", 4).primary).toEqual({ type: "BACK" });
   });
 
-  test("an offer starts the order and review completes it", () => {
-    expect(screenFor({ workspaceId: "w", cursor: "1", order, plan: { kind: "OFFER" } }, "online").primary).toEqual({ type: "CLAIM" });
-    expect(screenFor({ workspaceId: "w", cursor: "1", order, plan: { kind: "REVIEW_COMPLETE" } }, "online").primary).toEqual({ type: "COMPLETE" });
+  test("the cursor wraps both ways", () => {
+    expect(moreScreen(base, "ST-1042", 5).primary).toEqual({ type: "REPORT", report: "SHORTAGE" });
+    expect(moreScreen(base, "ST-1042", -1).primary).toEqual({ type: "BACK" });
   });
 });
