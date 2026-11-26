@@ -107,6 +107,18 @@ describe("order intake", () => {
     ]);
   });
 
+  test("a new update and a new status message are due even if the server clock steps back", async () => {
+    const ws = await boundWorkspace();
+    await send(update(ws.chatId, ws.fromId, "/order\nTS-BLK-M x 1"));
+    await telegram.pool.query("insert into telegram_inbox (bot_alias, update_id, payload) values ('clock-test', '1', '{}')");
+    // Asking with a clock a minute behind stands in for a backwards step after the insert.
+    const behind = "next_attempt_at <= now() - interval '1 minute'";
+    const inbox = await telegram.pool.query(`select 1 from telegram_inbox where bot_alias = 'clock-test' and ${behind}`);
+    await telegram.pool.query("delete from telegram_inbox where bot_alias = 'clock-test'");
+    const outbox = await telegram.pool.query(`select 1 from telegram_outbox where workspace_id = $1 and status = 'PENDING' and ${behind}`, [ws.workspaceId]);
+    expect({ inbox: inbox.rowCount, outbox: outbox.rowCount }).toEqual({ inbox: 1, outbox: 1 });
+  });
+
   test("the same Telegram update delivered twice creates one order", async () => {
     const ws = await boundWorkspace();
     const order = update(ws.chatId, ws.fromId, "/order\nTS-BLK-M x 1");
