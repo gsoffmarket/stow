@@ -57,6 +57,7 @@ export type OrderRow = {
   terminal: "COMPLETED" | "CANCELLED" | null;
   hold: Hold;
   picker: string | null;
+  isAccepted: boolean | null;
   toteId: string | null;
   confirmed: number;
   requested: number;
@@ -81,6 +82,7 @@ export type Resolution = { kind: "RESUME" } | { kind: "REDUCE"; quantity: number
 export type ConsoleCommand =
   | { type: "REVISE_ORDER"; payload: { reason: string; changes: { kind: "SET_QUANTITY"; lineId: string; quantity: number }[] } }
   | { type: "REQUEST_CANCEL"; payload: { reason: string } }
+  | { type: "ASSIGN_ORDER"; payload: { memberId: string } }
   | { type: "RESOLVE_EXCEPTION"; payload: { reason: string; resolution: Resolution } };
 
 export function listOrders(token: string, workspaceId: string, view: View): Promise<{ orders: OrderRow[] }> {
@@ -102,6 +104,12 @@ export function runCommand(token: string, workspaceId: string, detail: OrderDeta
     token,
     body: { commandId: crypto.randomUUID(), orderId: detail.order.id, expectedRevision: detail.order.revision, expectedVersion: detail.order.version, ...command },
   });
+}
+
+export type Picker = { id: string; name: string; openOrders: number };
+
+export function listPickers(token: string, workspaceId: string): Promise<{ pickers: Picker[] }> {
+  return call(`/v1/workspaces/${workspaceId}/pickers`, { method: "GET", token });
 }
 
 export type Product = { sku: string; name: string; bin: string | null; routeRank: number };
