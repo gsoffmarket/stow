@@ -89,28 +89,41 @@ export async function runCommand(pool: pg.Pool, actor: Actor, commandId: string,
   const allowed = actor.role === "OWNER" || actor.role === (isCoordinatorCommand ? "COORDINATOR" : "PICKER");
   if (!allowed) return { status: 403, body: { code: "ROLE_REQUIRED" } };
 
-  const requestHash = hashCommand(command);
-  return transaction(pool, async (client) => {
-    await lockWorkspace(client, actor.workspaceId);
-    const previous = await client.query<{ request_hash: string; http_status: number; response: CommandResult["body"] }>(
-      "select request_hash, http_status, response from command_results where workspace_id = $1 and actor_member_id = $2 and command_id = $3",
-      [actor.workspaceId, actor.memberId, commandId],
-    );
-    const stored = previous.rows[0];
-    if (stored) {
-      if (stored.request_hash !== requestHash) return { status: 409, body: { code: "IDEMPOTENCY_CONFLICT" } };
-      return { status: stored.http_status, body: stored.response } as CommandResult;
-    }
+  return transaction(pool, async (client) =>
+    once(client, actor, commandId, hashCommand(command), async () => {
+      const before = await loadOrder(client, actor.workspaceId, command.orderId);
+      return before ? execute(client, actor, commandId, command, before) : { status: 404, body: { code: "NOT_FOUND" } };
+    }),
+  );
+}
 
-    const before = await loadOrder(client, actor.workspaceId, command.orderId);
-    const result = before ? await execute(client, actor, commandId, command, before) : ({ status: 404, body: { code: "NOT_FOUND" } } as const);
-    // Rejections are stored too, so a retry of a refused command is refused the same way.
-    await client.query(
-      "insert into command_results (workspace_id, actor_member_id, command_id, request_hash, http_status, response) values ($1, $2, $3, $4, $5, $6)",
-      [actor.workspaceId, actor.memberId, commandId, requestHash, result.status, result.body],
-    );
-    return result;
-  });
+// Runs a command's work at most once per command ID, inside the caller's
+// transaction: the workspace lock serialises writers, a stored result is
+// replayed, and a reused ID with different content is refused. Rejections
+// are stored too, so a retry of a refused command is refused the same way.
+async function once<R extends { readonly status: number; readonly body: unknown }>(
+  client: pg.ClientBase,
+  actor: Actor,
+  commandId: string,
+  requestHash: string,
+  run: () => Promise<R>,
+): Promise<R | { status: 409; body: { code: "IDEMPOTENCY_CONFLICT" } }> {
+  await lockWorkspace(client, actor.workspaceId);
+  const previous = await client.query<{ request_hash: string; http_status: number; response: R["body"] }>(
+    "select request_hash, http_status, response from command_results where workspace_id = $1 and actor_member_id = $2 and command_id = $3",
+    [actor.workspaceId, actor.memberId, commandId],
+  );
+  const stored = previous.rows[0];
+  if (stored) {
+    if (stored.request_hash !== requestHash) return { status: 409, body: { code: "IDEMPOTENCY_CONFLICT" } };
+    return { status: stored.http_status, body: stored.response } as R;
+  }
+  const result = await run();
+  await client.query(
+    "insert into command_results (workspace_id, actor_member_id, command_id, request_hash, http_status, response) values ($1, $2, $3, $4, $5, $6)",
+    [actor.workspaceId, actor.memberId, commandId, requestHash, result.status, result.body],
+  );
+  return result;
 }
 
 async function execute(client: pg.ClientBase, actor: Actor, commandId: string, command: Command, before: Order): Promise<CommandResult> {
@@ -632,7 +645,7 @@ export async function transaction<T>(
 
 // The request hash covers the command's content, not its ID. Keys are sorted
 // at every depth so the same command always hashes the same.
-function hashCommand(command: Command): string {
+function hashCommand(command: unknown): string {
   return createHash("sha256").update(canonicalJson(command)).digest("hex");
 }
 
