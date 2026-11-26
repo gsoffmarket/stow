@@ -43,6 +43,7 @@ describe("holds", () => {
     ["AWAITING_PICKER_ACK", "AWAITING PICKER"],
     ["BLOCKED", "BLOCKED"],
     ["CANCELLING", "CANCELLING"],
+    ["RELEASING", "RELEASING"],
     ["PAUSED", "PAUSED"],
   ] as const)("%s shows as %s in the header", (hold, label) => {
     const text = renderStatus({ ref: "ST-1", revision: 2, terminal: null, picker: "P", toteId: "A", lines, hold, note: "NONE" });

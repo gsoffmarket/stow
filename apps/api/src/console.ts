@@ -4,7 +4,7 @@
 import type pg from "pg";
 import { transaction } from "./fulfilment.ts";
 
-export type Hold = "NONE" | "AWAITING_PICKER" | "BLOCKED" | "CANCELLING" | "PAUSED";
+export type Hold = "NONE" | "AWAITING_PICKER" | "BLOCKED" | "CANCELLING" | "RELEASING" | "PAUSED";
 
 /** OrderRow is one order as the console list shows it. */
 export type OrderRow = {
@@ -44,10 +44,10 @@ type Queryable = Pick<pg.ClientBase, "query">;
 async function selectOrders(db: Queryable, workspaceId: string, condition: string, params: unknown[]): Promise<OrderRow[]> {
   const { rows } = await db.query<{
     id: string; ref: string; terminal: OrderRow["terminal"]; revision: number; created_at: Date; updated_at: Date;
-    picker: string | null; tote_id: string | null; ack_revision: number | null; is_paused: boolean; is_cancel_requested: boolean;
+    picker: string | null; tote_id: string | null; ack_revision: number | null; is_paused: boolean; is_cancel_requested: boolean; is_release_requested: boolean;
     is_blocked: boolean; confirmed: number; requested: number; lines: number;
   }>(
-    `select o.id, o.ref, o.terminal, o.revision, o.created_at, o.updated_at, o.is_paused, o.is_cancel_requested,
+    `select o.id, o.ref, o.terminal, o.revision, o.created_at, o.updated_at, o.is_paused, o.is_cancel_requested, o.is_release_requested,
             m.display_name as picker, a.tote_id, a.ack_revision,
             exists (select 1 from order_exceptions e where e.order_id = o.id and e.status = 'OPEN') as is_blocked,
             l.confirmed, l.requested, l.lines
@@ -69,6 +69,7 @@ async function selectOrders(db: Queryable, workspaceId: string, condition: strin
     hold: row.is_blocked ? "BLOCKED"
       : row.ack_revision !== null && row.ack_revision !== row.revision ? "AWAITING_PICKER"
       : row.is_cancel_requested ? "CANCELLING"
+      : row.is_release_requested ? "RELEASING"
       : row.is_paused ? "PAUSED"
       : "NONE",
     picker: row.picker,

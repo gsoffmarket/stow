@@ -1,7 +1,7 @@
 import { describe, expect, test } from "vitest";
 import { clampQuantity, moreScreen, pairingScreen, quantityScreen, screenFor, type Snapshot } from "./screens.ts";
 
-const order = { id: "o1", ref: "ST-1042", revision: 2, version: "7", isCancelRequested: false, toteId: "A", lines: [{ requested: 3 }, { requested: 2 }, { requested: 1 }] };
+const order = { id: "o1", ref: "ST-1042", revision: 2, version: "7", isCancelRequested: false, isReleaseRequested: false, toteId: "A", lines: [{ requested: 3 }, { requested: 2 }, { requested: 1 }] };
 const quickReplies = [{ id: "ON_IT", text: "On it" }, { id: "FOUND", text: "Found them" }];
 const empty = { totes: [], batchOffer: [], changes: [], decision: null, lastCompleted: null, note: null, quickReplies };
 
@@ -26,7 +26,7 @@ describe("tasks", () => {
       body: "BIN A-03\nBLACK T-SHIRT\nTS-BLK-M\n\nPICK × 3",
       primary: { type: "CONFIRM", quantity: 3 },
     });
-    expect(screen.options.map((option) => option.label)).toEqual(["PICK FEWER", "REPORT SHORTAGE", "DAMAGED ITEM", "WRONG LOCATION", "MESSAGE GROUP", "PAUSE ORDER"]);
+    expect(screen.options.map((option) => option.label)).toEqual(["PICK FEWER", "REPORT SHORTAGE", "DAMAGED ITEM", "WRONG LOCATION", "MESSAGE GROUP", "PAUSE ORDER", "RELEASE ORDER"]);
   });
 
   test("a return says RETURN, never PICK -1, and asks for the actual return", () => {
@@ -121,14 +121,18 @@ describe("the More screen", () => {
   test("lists the options with a cursor, ending in Back, and tap chooses the one under it", () => {
     expect(moreScreen(base.options, "ST-1042", 0)).toMatchObject({
       header: "ST-1042   MORE",
-      body: "> PICK FEWER\n  REPORT SHORTAGE\n  DAMAGED ITEM\n  WRONG LOCATION\n  MESSAGE GROUP\n  PAUSE ORDER\n  BACK",
+      body: "> PICK FEWER\n  REPORT SHORTAGE\n  DAMAGED ITEM\n  WRONG LOCATION\n  MESSAGE GROUP\n  PAUSE ORDER",
       primary: { type: "CHOOSE_QUANTITY" },
     });
-    expect(moreScreen(base.options, "ST-1042", 6).primary).toEqual({ type: "BACK" });
+    expect(moreScreen(base.options, "ST-1042", 7).primary).toEqual({ type: "BACK" });
+  });
+
+  test("a long list scrolls so the cursor stays on screen", () => {
+    expect(moreScreen(base.options, "ST-1042", 7).body).toBe("  DAMAGED ITEM\n  WRONG LOCATION\n  MESSAGE GROUP\n  PAUSE ORDER\n  RELEASE ORDER\n> BACK");
   });
 
   test("the cursor wraps both ways", () => {
-    expect(moreScreen(base.options, "ST-1042", 7).primary).toEqual({ type: "CHOOSE_QUANTITY" });
+    expect(moreScreen(base.options, "ST-1042", 8).primary).toEqual({ type: "CHOOSE_QUANTITY" });
     expect(moreScreen(base.options, "ST-1042", -1).primary).toEqual({ type: "BACK" });
   });
 });
@@ -237,5 +241,23 @@ describe("batches", () => {
 
   test("a review in a batch says which tote to check", () => {
     expect(screenFor(snapshot({ kind: "REVIEW_COMPLETE" }, { totes: carrying }), "online").body).toBe("ALL ITEMS IN TOTE A\nCheck the tote, then complete.");
+  });
+});
+
+describe("release", () => {
+  const releasing = { order: { ...order, isReleaseRequested: true } };
+
+  test("a return while releasing says why and offers to keep the order", () => {
+    const screen = screenFor(snapshot(task("RETURN"), releasing), "online");
+    expect(screen.body).toBe("RELEASING — EMPTY THE TOTE\nRETURN × 3\nBLACK T-SHIRT\nBIN A-03 · TS-BLK-M");
+    expect(screen.options.at(-1)).toEqual({ label: "KEEP ORDER", action: { type: "CANCEL_RELEASE" } });
+  });
+
+  test("an empty tote is released with a tap, or kept with a swipe", () => {
+    expect(screenFor(snapshot({ kind: "REVIEW_RELEASE" }, releasing), "online")).toMatchObject({
+      body: "TOTE EMPTY\nHand the order back to the queue.",
+      primary: { type: "RELEASE" },
+      options: [{ label: "KEEP ORDER", action: { type: "CANCEL_RELEASE" } }],
+    });
   });
 });

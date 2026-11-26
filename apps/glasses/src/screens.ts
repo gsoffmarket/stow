@@ -28,6 +28,7 @@ export type Snapshot = {
     readonly revision: number;
     readonly version: string;
     readonly isCancelRequested: boolean;
+    readonly isReleaseRequested: boolean;
     readonly toteId: string | null;
     readonly lines: readonly { readonly requested: number }[];
   } | null;
@@ -79,7 +80,7 @@ export type ReportType = "SHORTAGE" | "DAMAGED" | "LOCATION_MISMATCH" | "RETURN_
 
 /** Action is what a tap does on the current screen. */
 export type Action =
-  | { readonly type: "CLAIM" | "COMPLETE" | "REFRESH" | "ACK_REVISION" | "PAUSE" | "RESUME" | "CLOSE_CANCELLED" | "DISMISS" | "BACK" | "REPLIES" | "CHOOSE_QUANTITY" }
+  | { readonly type: "CLAIM" | "COMPLETE" | "REFRESH" | "ACK_REVISION" | "PAUSE" | "RESUME" | "CLOSE_CANCELLED" | "PREPARE_RELEASE" | "CANCEL_RELEASE" | "RELEASE" | "DISMISS" | "BACK" | "REPLIES" | "CHOOSE_QUANTITY" }
   | { readonly type: "MARK_READ"; readonly noteId: string }
   | { readonly type: "REPLY"; readonly replyId: string; readonly noteId: string | null }
   | { readonly type: "CONFIRM"; readonly quantity: number }
@@ -114,7 +115,10 @@ const pickOptions: readonly Option[] = [
   { label: "WRONG LOCATION", action: { type: "REPORT", report: "LOCATION_MISMATCH" } },
   messageGroup,
   { label: "PAUSE ORDER", action: { type: "PAUSE" } },
+  { label: "RELEASE ORDER", action: { type: "PREPARE_RELEASE" } },
 ];
+
+const keepOrder: Option = { label: "KEEP ORDER", action: { type: "CANCEL_RELEASE" } };
 
 const returnOptions: readonly Option[] = [
   { label: "RETURN FEWER", action: { type: "CHOOSE_QUANTITY" } },
@@ -131,6 +135,10 @@ export function replyOptions(snapshot: Snapshot, noteId: string | null): Option[
   return snapshot.quickReplies.map((reply) => ({ label: reply.text.toUpperCase(), action: { type: "REPLY", replyId: reply.id, noteId } }));
 }
 
+// The body container shows about seven lines of the display font; a longer
+// list scrolls with the cursor so the choice under it is always visible.
+const moreLines_max = 6;
+
 /**
  * moreScreen lists a screen's options with a cursor. The last line is always
  * Back, so a worker who swiped by accident can get out with one tap.
@@ -138,7 +146,11 @@ export function replyOptions(snapshot: Snapshot, noteId: string | null): Option[
 export function moreScreen(choices: readonly Option[], ref: string, cursor: number): Screen {
   const options = [...choices, { label: "BACK", action: { type: "BACK" } as Action }];
   const at = ((cursor % options.length) + options.length) % options.length;
-  const body = options.map((option, index) => `${index === at ? ">" : " "} ${option.label}`).join("\n");
+  const first = Math.max(0, Math.min(at - moreLines_max + 1, options.length - moreLines_max));
+  const body = options
+    .map((option, index) => `${index === at ? ">" : " "} ${option.label}`)
+    .slice(first, first + moreLines_max)
+    .join("\n");
   return screen(`${ref}   MORE`, body, "SWIPE TO MOVE · TAP TO CHOOSE", options[at]!.action);
 }
 
@@ -178,13 +190,15 @@ export function screenFor(snapshot: Snapshot | null, link: Link, dismissedRef: s
       const into = snapshot.totes.length > 1 && task.toteId ? ` → TOTE ${task.toteId}` : "";
       const from = snapshot.totes.length > 1 && task.toteId ? ` FROM TOTE ${task.toteId}` : "";
       if (task.kind === "RETURN") {
-        const why = snapshot.order?.isCancelRequested ? "CANCELLED — RETURN REQUIRED\n" : "";
+        const isReleasing = snapshot.order?.isReleaseRequested === true;
+        const why = snapshot.order?.isCancelRequested ? "CANCELLED — RETURN REQUIRED\n" : isReleasing ? "RELEASING — EMPTY THE TOTE\n" : "";
+        const options = task.quantity > 1 ? returnOptions : returnOptions.slice(1);
         return screen(
           `${task.orderRef}   ${tote}   RETURN`,
           `${why}RETURN × ${task.quantity}${from}\n${task.name.toUpperCase()}\n${where} · ${task.sku}`,
           "TAP TO CONFIRM ACTUAL RETURN",
           { type: "CONFIRM", quantity: task.quantity },
-          task.quantity > 1 ? returnOptions : returnOptions.slice(1),
+          isReleasing ? [...options, keepOrder] : options,
         );
       }
       return screen(
@@ -237,7 +251,7 @@ export function screenFor(snapshot: Snapshot | null, link: Link, dismissedRef: s
     case "CONFLICT":
       return screen(`${ref}   STOP`, "THIS ORDER IS ASSIGNED\nTO SOMEONE ELSE", "TAP TO REFRESH", refresh);
     case "REVIEW_RELEASE":
-      return screen(`${ref}   RELEASE`, "Waiting for the coordinator.", "TAP TO REFRESH", refresh);
+      return screen(`${ref}   RELEASE`, "TOTE EMPTY\nHand the order back to the queue.", "TAP TO RELEASE · SWIPE TO KEEP", { type: "RELEASE" }, [keepOrder]);
   }
 }
 

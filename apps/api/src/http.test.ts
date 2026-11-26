@@ -126,3 +126,31 @@ describe("batch API", () => {
     expect({ status: refused.statusCode, code: refused.json().error.code }).toEqual({ status: 400, code: "BATCH_SIZE" });
   });
 });
+
+describe("release API", () => {
+  test("a picker empties the tote and hands the order back to the queue", async () => {
+    const { workspaceId, orderId, auth } = await workspaceWithDevice();
+    const step = async (type: string, payload: object = {}) => {
+      const order = (await snapshot(workspaceId, auth)).json().data.order;
+      const response = await command(workspaceId, auth, { commandId: randomUUID(), type, orderId, expectedRevision: order.revision, expectedVersion: order.version, payload });
+      return { status: response.statusCode, code: response.json().error?.code };
+    };
+    await step("CLAIM_ORDER", { toteId: "A" });
+    const pick = (await snapshot(workspaceId, auth)).json().data.plan;
+    await step("CONFIRM_TASK", { taskToken: pick.taskToken, kind: "PICK", lineId: pick.task.lineId, quantity: 2 });
+
+    await step("PREPARE_RELEASE");
+    expect(await step("RELEASE_ORDER")).toEqual({ status: 409, code: "INVALID_TRANSITION" });
+    const back = (await snapshot(workspaceId, auth)).json().data;
+    expect(back).toMatchObject({ order: { isReleaseRequested: true }, plan: { kind: "TASK", task: { kind: "RETURN", quantity: 2 } } });
+    await step("CONFIRM_TASK", { taskToken: back.plan.taskToken, kind: "RETURN", lineId: back.plan.task.lineId, quantity: 2 });
+    expect((await snapshot(workspaceId, auth)).json().data.plan).toEqual({ kind: "REVIEW_RELEASE" });
+    expect(await step("RELEASE_ORDER")).toEqual({ status: 200, code: undefined });
+
+    expect((await snapshot(workspaceId, auth)).json().data).toMatchObject({ order: { id: orderId, isReleaseRequested: false }, plan: { kind: "OFFER" } });
+    const assignment = await db.pool.query("select released_at is not null as released from assignments where order_id = $1", [orderId]);
+    expect(assignment.rows).toEqual([{ released: true }]);
+    const events = await db.pool.query("select event_type from fulfilment_events where order_id = $1 order by seq", [orderId]);
+    expect(events.rows.map((row) => row.event_type)).toEqual(["ORDER_CREATED", "ORDER_CLAIMED", "PICK_CONFIRMED", "RELEASE_REQUESTED", "RETURN_CONFIRMED", "ORDER_RELEASED"]);
+  });
+});

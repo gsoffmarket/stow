@@ -11,7 +11,7 @@ export type OrderStatus = {
   readonly toteId: string | null;
   readonly lines: readonly { readonly sku: string; readonly requested: number; readonly picked: number }[];
   /** What is holding the order up, if anything. */
-  readonly hold: "NONE" | "AWAITING_PICKER_ACK" | "BLOCKED" | "CANCELLING" | "PAUSED";
+  readonly hold: "NONE" | "AWAITING_PICKER_ACK" | "BLOCKED" | "CANCELLING" | "RELEASING" | "PAUSED";
   /** The state of the latest coordinator note, shown so the group knows it landed. */
   readonly note: "NONE" | "UNREAD" | "READ";
 };
@@ -22,7 +22,7 @@ const maxLength = 4096;
 
 /** renderStatus produces the status message text for an order. */
 export function renderStatus(status: OrderStatus): string {
-  const held = { NONE: null, AWAITING_PICKER_ACK: "AWAITING PICKER", BLOCKED: "BLOCKED", CANCELLING: "CANCELLING", PAUSED: "PAUSED" }[status.hold];
+  const held = { NONE: null, AWAITING_PICKER_ACK: "AWAITING PICKER", BLOCKED: "BLOCKED", CANCELLING: "CANCELLING", RELEASING: "RELEASING", PAUSED: "PAUSED" }[status.hold];
   const phase = status.terminal ?? held ?? (status.picker ? "PICKING" : "QUEUED");
   const confirmed = status.lines.reduce((sum, line) => sum + Math.min(line.picked, line.requested), 0);
   const requested = status.lines.reduce((sum, line) => sum + line.requested, 0);
