@@ -176,3 +176,85 @@ describe("workerView with a batch", () => {
     expect({ orderId: view.order?.id, plan: view.plan.kind }).toEqual({ orderId: shown[1]!.orderId, plan: "TASK" });
   });
 });
+
+describe("changes in the middle of a batch", () => {
+  const coordinate = (ws: Workspace, command: Command) => runCommand(db.pool, { workspaceId: ws.workspaceId, memberId: ws.coordinator, role: "COORDINATOR" }, randomUUID(), command);
+
+  // Does whatever the glasses would show next, and names it "<tote> <what>".
+  async function next(ws: Workspace): Promise<string> {
+    const view = await workerView(db.pool, ws.workspaceId, ws.picker);
+    const order = view.order!;
+    const at = { orderId: order.id, revision: order.revision, version: order.version };
+    const tote = order.assignment!.toteId;
+    const plan = view.plan;
+    if (plan.kind === "TASK") {
+      const sku = order.lines.find((line) => line.id === plan.task.lineId)!.sku;
+      expect((await run(ws, { type: "CONFIRM_TASK", ...at, kind: plan.task.kind, lineId: plan.task.lineId, quantity: plan.task.quantity })).status).toBe(200);
+      return `${tote} ${plan.task.kind} ${sku} ${plan.task.quantity}`;
+    }
+    const command: Command | null =
+      plan.kind === "REVISION_ACK" ? { type: "ACK_REVISION", ...at }
+      : plan.kind === "REVIEW_COMPLETE" ? { type: "COMPLETE_ORDER", ...at }
+      : plan.kind === "REVIEW_CANCEL" ? { type: "CLOSE_CANCELLED", ...at }
+      : null;
+    if (!command) throw new Error(`next: plan ${plan.kind} has no action`);
+    expect((await run(ws, command)).status).toBe(200);
+    return `${tote} ${plan.kind}`;
+  }
+
+  async function lineId(orderId: string, sku: string): Promise<string> {
+    const { rows } = await db.pool.query<{ id: string }>("select id from order_lines where order_id = $1 and sku_snapshot = $2", [orderId, sku]);
+    return rows[0]!.id;
+  }
+
+  async function current(orderId: string) {
+    const { rows } = await db.pool.query<{ revision: number; version: string }>("select revision, version from orders where id = $1", [orderId]);
+    return { orderId, revision: rows[0]!.revision, version: Number(rows[0]!.version) };
+  }
+
+  test("a revision stops only its own tote, which returns its excess before any other pick", async () => {
+    const ws = await workspace();
+    const [a, b] = await queue(ws, 2);
+    await start(ws, [a!, b!]);
+    expect(await next(ws)).toBe("A PICK TS-BLK-M 3");
+    const revised = await coordinate(ws, { type: "REVISE_ORDER", ...(await current(a!.orderId)), reason: "customer wants one", changes: [{ kind: "SET_QUANTITY", lineId: await lineId(a!.orderId, "TS-BLK-M"), quantity: 1 }] });
+    expect(revised.status).toBe(200);
+
+    const steps = [];
+    for (let i = 0; i < 4; i++) steps.push(await next(ws));
+    expect(steps).toEqual(["A REVISION_ACK", "A RETURN TS-BLK-M 2", "B PICK TS-BLK-M 3", "A PICK CP-WHT 2"]);
+    const picked = await db.pool.query("select o.ref, l.sku_snapshot as sku, l.picked_qty as picked from order_lines l join orders o on o.id = l.order_id where o.id = any($1) order by o.ref, l.creation_index", [[a!.orderId, b!.orderId]]);
+    expect(picked.rows).toEqual([
+      { ref: "ST-1001", sku: "TS-BLK-M", picked: 1 },
+      { ref: "ST-1001", sku: "CP-WHT", picked: 2 },
+      { ref: "ST-1002", sku: "TS-BLK-M", picked: 3 },
+      { ref: "ST-1002", sku: "CP-WHT", picked: 0 },
+    ]);
+  });
+
+  test("a cancellation empties and closes only its own tote, and the other order finishes", async () => {
+    const ws = await workspace();
+    const [a, b] = await queue(ws, 2);
+    await start(ws, [a!, b!]);
+    await next(ws);
+    await next(ws);
+    expect((await coordinate(ws, { type: "REQUEST_CANCEL", ...(await current(b!.orderId)), reason: "customer cancelled" })).status).toBe(200);
+
+    const steps = [];
+    for (let i = 0; i < 5; i++) steps.push(await next(ws));
+    expect(steps).toEqual(["B REVISION_ACK", "B RETURN TS-BLK-M 3", "B REVIEW_CANCEL", "A PICK CP-WHT 2", "A REVIEW_COMPLETE"]);
+    const closed = await db.pool.query("select ref, terminal from orders where id = any($1) order by ref", [[a!.orderId, b!.orderId]]);
+    expect(closed.rows).toEqual([{ ref: "ST-1001", terminal: "COMPLETED" }, { ref: "ST-1002", terminal: "CANCELLED" }]);
+  });
+
+  test("a fresh session after a disconnect sees the same totes and the same next step", async () => {
+    const ws = await workspace();
+    const shown = await queue(ws, 3);
+    await start(ws, shown);
+    await next(ws);
+    const before = await workerView(db.pool, ws.workspaceId, ws.picker);
+    const after = await workerView(db.pool, ws.workspaceId, ws.picker);
+    expect({ totes: after.totes, plan: after.plan, order: after.order?.id }).toEqual({ totes: before.totes, plan: before.plan, order: before.order?.id });
+    expect(after.totes.map((tote) => tote.toteId)).toEqual(["A", "B", "C"]);
+  });
+});
