@@ -44,9 +44,9 @@ See [docs/architecture.md](docs/architecture.md) for the codemap, invariants and
 | Area | What it does |
 |---|---|
 | **Telegram** | `/setup`, `/stow_connect`, invite links, `/order`; `/revise`, `/cancel` and `/resolve` with preview buttons; shortage messages with Resume / Reduce / Cancel; one live status message per order; notes and picker replies |
-| **Glasses** | Pick, return, partial quantity, revision and decision acknowledgements, report a problem, pause, coordinator notes, quick replies, a Saved screen with the Telegram delivery state, pairing |
+| **Glasses** | Pick, return, partial quantity, batches of 2–5 orders in separate totes, revision and decision acknowledgements, report a problem, pause, coordinator notes, quick replies, a Saved screen with the Telegram delivery state, pairing |
 | **Mini App** | Telegram sign-in, glasses pairing, and a coordinator console with orders, detail, revise, cancel, resolve, notes and timeline |
-| **Engine** | Revisions that never overwrite picked work, mandatory returns, cancellation with full return, one open problem per order, idempotent commands, stale-command rejection |
+| **Engine** | Batch planning across totes in walking order, revisions that never overwrite picked work, mandatory returns, cancellation with full return, one open problem per order, idempotent commands, stale-command rejection |
 
 **Verified runs**, all in Even Hub simulator 0.9.5 against a real Postgres database:
 - **Pick to complete:** start, three picks, review, complete. Six events committed.
@@ -55,12 +55,17 @@ See [docs/architecture.md](docs/architecture.md) for the codemap, invariants and
 - **Notes and replies:** a coordinator note on the glasses, then "Found them" sent from the quick replies.
 - **Fewer than asked:** a partial quantity of 2 of 3.
 - **Console revision:** a revision from the Mini App reached the glasses as "STOP — ORDER CHANGED".
+- **Batch of two:** started from More, picked in walking order across totes A and B (A, B, A, B, A), each tote reviewed and completed. Twelve events in that order.
 
-**210 automated tests** pass, most of them integration tests against real Postgres. They include two pickers claiming one order at once, replayed and conflicting command IDs, forged task tokens and forged Telegram launch data. A live run against real Telegram and physical G2 hardware is still to come.
+**248 automated tests** pass, most of them integration tests against real Postgres. They include two pickers claiming one order at once, an all-or-none batch claim, replayed and conflicting command IDs, forged task tokens and forged Telegram launch data. A live run against real Telegram and physical G2 hardware is still to come.
 
 <p>
   <img src="docs/evidence/glasses-return.png" width="288" alt="Glasses: return 2 black T-shirts to bin A-03, tap to confirm actual return.">
   <img src="docs/evidence/glasses-note.png" width="288" alt="Glasses: note from the owner: white caps are on the top shelf, behind the totes.">
+</p>
+<p>
+  <img src="docs/evidence/glasses-batch-pick.png" width="288" alt="Glasses in a batch: ST-1007, tote B, bin A-03, black T-shirt, pick 3 into tote B.">
+  <img src="docs/evidence/glasses-batch-review.png" width="288" alt="Glasses in a batch: ST-1006 review, all items in tote A, tap to complete.">
 </p>
 <p>
   <img src="docs/evidence/miniapp-orders.jpg" width="240" alt="Mini App orders list: ST-1003 picking, 2 of 6 confirmed, Picker 02, tote A.">
