@@ -11,6 +11,7 @@ import type pg from "pg";
 import { z } from "zod";
 import { outstandingPick, outstandingReturn, type Order, type Task } from "@stow/order-engine";
 import { runCommand, workerView, type Command, type Role } from "./fulfilment.ts";
+import * as devices from "./devices.ts";
 import { memberships, sessionUser, startSession, verifyLaunchData } from "./identity.ts";
 
 export type HttpOptions = {
@@ -66,7 +67,7 @@ export function buildHttp(options: HttpOptions): FastifyInstance {
     const origin = request.headers.origin;
     if (origin && options.corsAllowedOrigins.includes(origin)) {
       reply.header("access-control-allow-origin", origin).header("vary", "origin");
-      reply.header("access-control-allow-headers", "authorization, content-type");
+      reply.header("access-control-allow-headers", "authorization, content-type, x-pairing-secret");
       reply.header("access-control-allow-methods", "GET, POST");
     }
     if (request.method === "OPTIONS") return reply.code(204).send();
@@ -103,6 +104,39 @@ export function buildHttp(options: HttpOptions): FastifyInstance {
     const telegramUserId = await miniAppUser(request, reply, options.pool);
     if (!telegramUserId) return reply;
     return ok(reply, request, { telegramUserId, memberships: await memberships(options.pool, telegramUserId) });
+  });
+
+  // Pairing. The glasses call start, poll state and exchange with the secret;
+  // a signed-in picker approves from the Mini App.
+  app.post("/v1/devices/pairings", async (request, reply) => {
+    const parsed = z.strictObject({ label: z.string().trim().min(1).max(60) }).safeParse(request.body);
+    if (!parsed.success) return fail(reply, request, 400, "INVALID_INPUT");
+    return ok(reply, request, await devices.start(options.pool, parsed.data.label));
+  });
+
+  app.get<{ Params: { pid: string } }>("/v1/devices/pairings/:pid", async (request, reply) => {
+    const secret = request.headers["x-pairing-secret"];
+    if (!uuid.safeParse(request.params.pid).success || typeof secret !== "string") return fail(reply, request, 404, "NOT_FOUND");
+    const found = await devices.state(options.pool, request.params.pid, secret);
+    return found ? ok(reply, request, { status: found }) : fail(reply, request, 404, "NOT_FOUND");
+  });
+
+  app.post<{ Params: { pid: string } }>("/v1/devices/pairings/:pid/exchange", async (request, reply) => {
+    const secret = request.headers["x-pairing-secret"];
+    if (!uuid.safeParse(request.params.pid).success || typeof secret !== "string") return fail(reply, request, 404, "NOT_FOUND");
+    const result = await devices.exchange(options.pool, request.params.pid, secret);
+    if (result.ok) return ok(reply, request, { token: result.token, workspaceId: result.workspaceId, expiresAt: result.expiresAt });
+    return fail(reply, request, result.code === "NOT_FOUND" ? 404 : 409, result.code);
+  });
+
+  app.post("/v1/devices/pairings/approve", async (request, reply) => {
+    const telegramUserId = await miniAppUser(request, reply, options.pool);
+    if (!telegramUserId) return reply;
+    const parsed = z.strictObject({ workspaceId: uuid, code: z.string().min(8).max(16) }).safeParse(request.body);
+    if (!parsed.success) return fail(reply, request, 400, "INVALID_INPUT");
+    const result = await devices.approve(options.pool, telegramUserId, parsed.data.workspaceId, parsed.data.code);
+    if (result.ok) return ok(reply, request, { label: result.label });
+    return fail(reply, request, result.code === "PAIRING_EXPIRED" ? 410 : result.code === "ROLE_REQUIRED" ? 403 : 404, result.code);
   });
 
   app.get<{ Params: { wid: string } }>("/v1/workspaces/:wid/worker/snapshot", async (request, reply) => {
@@ -274,6 +308,9 @@ const messages: Record<string, string> = {
   ASSIGNMENT_CONFLICT: "this order belongs to someone else",
   QUANTITY_OUT_OF_RANGE: "the quantity is outside what this task needs",
   ROLE_REQUIRED: "your role cannot do this",
+  PAIRING_EXPIRED: "that code has expired; the glasses will show a new one",
+  NOT_APPROVED: "not approved yet",
+  ALREADY_EXCHANGED: "this pairing has already been used",
   OPEN_EXCEPTION: "a problem is already reported on this order",
   UNKNOWN_SKU: "that SKU is not in the catalogue",
   NO_CHANGE: "nothing changed",
