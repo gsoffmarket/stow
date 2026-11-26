@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { moreScreen, screenFor, type Snapshot } from "./screens.ts";
+import { moreScreen, pairingScreen, screenFor, type Snapshot } from "./screens.ts";
 
 const order = { id: "o1", ref: "ST-1042", revision: 2, version: "7", isCancelRequested: false, toteId: "A" };
 const empty = { changes: [], decision: null, lastCompleted: null };
@@ -129,5 +129,19 @@ describe("the More screen", () => {
   test("the cursor wraps both ways", () => {
     expect(moreScreen(base, "ST-1042", 5).primary).toEqual({ type: "REPORT", report: "SHORTAGE" });
     expect(moreScreen(base, "ST-1042", -1).primary).toEqual({ type: "BACK" });
+  });
+});
+
+describe("pairing", () => {
+  test("shows the code and where to enter it", () => {
+    expect(pairingScreen("K7Q4-M2XP", "online")).toMatchObject({
+      header: "STOW   PAIR",
+      body: "CODE  K7Q4-M2XP\n\nOpen Stow in Telegram\nand enter this code.",
+      primary: { type: "REFRESH" },
+    });
+  });
+
+  test("says when it cannot reach the server instead of showing a stale code", () => {
+    expect(pairingScreen("K7Q4-M2XP", "offline").body).toMatch(/^NOT CONNECTED/);
   });
 });
