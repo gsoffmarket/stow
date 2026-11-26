@@ -1,4 +1,4 @@
 {
   "files": [],
-  "references": [{ "path": "packages/order-engine" }]
+  "references": [{ "path": "packages/order-engine" }, { "path": "apps/api" }]
 }
