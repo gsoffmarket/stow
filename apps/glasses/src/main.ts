@@ -42,6 +42,7 @@ const devCredentials: Credentials | null =
     ? { token: import.meta.env.VITE_STOW_DEV_DEVICE_TOKEN as string, workspaceId: import.meta.env.VITE_STOW_WORKSPACE_ID as string }
     : null;
 const storageKey = "stow.device";
+const autoNextKey = "stow.autoNext";
 
 const pollInterval_ms = 1_500;
 const pairingPoll_ms = 2_000;
@@ -78,6 +79,8 @@ let moreCursor: number | null = null;
 let moreList: readonly Option[] | null = null;
 // The quantity being chosen on the "how many?" screen, or null when it is closed.
 let chosenQuantity: number | null = null;
+// The picker's auto-next choice, kept on the glasses; off until they turn it on.
+let isAutoNext = false;
 // The batch size whose tote mapping is on screen, or null when it is closed.
 let batchSize: number | null = null;
 let base: Screen | null = null;
@@ -96,7 +99,7 @@ function onBridge<T>(call: () => Promise<T>): Promise<T> {
 }
 
 async function render(): Promise<void> {
-  const underlying = credentials ? screenFor(snapshot, link, dismissedRef) : pairingScreen(pairing?.code ?? null, link);
+  const underlying = credentials ? screenFor(snapshot, link, { dismissedRef, isAutoNext }) : pairingScreen(pairing?.code ?? null, link);
   if (base && (underlying.header !== base.header || underlying.body !== base.body)) {
     moreCursor = null;
     moreList = null;
@@ -278,6 +281,7 @@ function commandFor(action: Action): object | null {
         ...expected,
         payload: { taskToken: plan.taskToken, kind: plan.task.kind, lineId: plan.task.lineId, quantity: action.quantity },
       };
+    case "TOGGLE_AUTO_NEXT":
     case "REVIEW_BATCH":
     case "START_BATCH":
     case "REFRESH":
@@ -331,6 +335,13 @@ async function perform(action: Action | null | undefined): Promise<void> {
     await send({ path: "/replies", body: { clientId: crypto.randomUUID(), orderId: snapshot.order.id, replyId: action.replyId } });
     if (action.noteId && link === "online") await send({ path: `/messages/${action.noteId}/read`, body: {} });
     return;
+  }
+  if (action.type === "TOGGLE_AUTO_NEXT") {
+    isAutoNext = !isAutoNext;
+    moreCursor = null;
+    // The choice still applies for this session if saving it fails.
+    await onBridge(() => bridge.setLocalStorage(autoNextKey, isAutoNext ? "on" : "")).catch((error) => console.warn("auto-next not saved", error));
+    return render();
   }
   if (action.type === "REVIEW_BATCH") {
     moreCursor = null;
@@ -391,5 +402,6 @@ async function pollLoop(): Promise<void> {
 bridge = await waitForEvenAppBridge();
 await render();
 credentials = await loadCredentials();
+isAutoNext = (await onBridge(() => bridge.getLocalStorage(autoNextKey)).catch(() => "")) === "on";
 listen();
 await pollLoop();
