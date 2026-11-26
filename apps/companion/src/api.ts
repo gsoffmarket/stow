@@ -175,6 +175,17 @@ export function changeMember(token: string, workspaceId: string, memberId: strin
   return call(change.kind === "revoke" ? `${base}/devices/revoke` : `${base}/remove`, { method: "POST", token, body: {} });
 }
 
+/** TelegramGroup is a group that drives the workspace; title is null for groups connected before names were kept. */
+export type TelegramGroup = { id: string; title: string | null; connectedAt: string; connectedBy: string; openOrders: number };
+
+export function getTelegram(token: string, workspaceId: string): Promise<{ groups: TelegramGroup[]; delivery: { undelivered: number } }> {
+  return call(`/v1/workspaces/${workspaceId}/telegram`, { method: "GET", token });
+}
+
+export function disconnectGroup(token: string, workspaceId: string, groupId: string): Promise<{ disconnected: true }> {
+  return call(`/v1/workspaces/${workspaceId}/telegram/groups/${groupId}/disconnect`, { method: "POST", token, body: {} });
+}
+
 export type Picker = { id: string; name: string; openOrders: number };
 
 export function listPickers(token: string, workspaceId: string): Promise<{ pickers: Picker[] }> {
