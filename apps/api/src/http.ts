@@ -15,6 +15,7 @@ import * as devices from "./devices.ts";
 import { markRead, postNote, quickReplies, sendReply } from "./messages.ts";
 import { listOrders, orderDetail, pickers } from "./console.ts";
 import * as catalogue from "./catalogue.ts";
+import * as members from "./members.ts";
 import { Limiter, limits, type Limit } from "./limits.ts";
 import { memberships, sessionUser, startSession, verifyLaunchData } from "./identity.ts";
 import type { Actor } from "./fulfilment.ts";
@@ -241,6 +242,42 @@ export function buildHttp(options: HttpOptions): FastifyInstance {
     if (result.status !== 200) return fail(reply, request, result.status, result.body.code);
     return ok(reply, request, result.body);
   });
+
+  // The Workers page: everyone can see the team; only owners change it.
+  app.get<{ Params: { wid: string } }>("/v1/workspaces/:wid/members", async (request, reply) => {
+    const actor = await coordinator(request, reply, options.pool);
+    if (!actor) return reply;
+    return ok(reply, request, { members: await members.listMembers(options.pool, actor) });
+  });
+
+  const memberChange = async (
+    request: FastifyRequest<{ Params: { wid: string; mid: string } }>,
+    reply: FastifyReply,
+    run: (actor: Actor, memberId: string) => Promise<members.Change>,
+  ) => {
+    const actor = await coordinator(request, reply, options.pool);
+    if (!actor) return reply;
+    if (!allow(request, reply, `command:${actor.memberId}`, limits.commands)) return reply;
+    if (!uuid.safeParse(request.params.mid).success) return fail(reply, request, 404, "NOT_FOUND");
+    const result = await run(actor, request.params.mid);
+    if (result.ok) return ok(reply, request, { changed: true });
+    const status = { ROLE_REQUIRED: 403, NOT_FOUND: 404, LAST_OWNER: 409, HOLDS_ORDERS: 409, NO_CHANGE: 409 }[result.code];
+    return fail(reply, request, status, result.code);
+  };
+
+  app.post<{ Params: { wid: string; mid: string } }>("/v1/workspaces/:wid/members/:mid/role", async (request, reply) => {
+    const parsed = z.strictObject({ role: z.enum(["OWNER", "COORDINATOR", "PICKER"]) }).safeParse(request.body);
+    if (!parsed.success) return fail(reply, request, 400, "INVALID_INPUT");
+    return memberChange(request, reply, (actor, memberId) => members.changeRole(options.pool, actor, memberId, parsed.data.role));
+  });
+
+  app.post<{ Params: { wid: string; mid: string } }>("/v1/workspaces/:wid/members/:mid/devices/revoke", (request, reply) =>
+    memberChange(request, reply, (actor, memberId) => members.revokeDevices(options.pool, actor, memberId)),
+  );
+
+  app.post<{ Params: { wid: string; mid: string } }>("/v1/workspaces/:wid/members/:mid/remove", (request, reply) =>
+    memberChange(request, reply, (actor, memberId) => members.removeMember(options.pool, actor, memberId)),
+  );
 
   app.get<{ Params: { wid: string } }>("/v1/workspaces/:wid/pickers", async (request, reply) => {
     const actor = await coordinator(request, reply, options.pool);
@@ -530,6 +567,8 @@ const messages: Record<string, string> = {
   QUANTITY_OUT_OF_RANGE: "the quantity is outside what this task needs",
   ROLE_REQUIRED: "your role cannot do this",
   REF_TAKEN: "another order already uses that reference",
+  LAST_OWNER: "a workspace needs at least one owner; make someone else owner first",
+  HOLDS_ORDERS: "this person still holds open orders; release or reassign them first",
   NOT_A_PICKER: "orders can only be assigned to pickers in this workspace",
   BATCH_SIZE: "a batch holds 2 to 5 different orders",
   PAIRING_EXPIRED: "that code has expired; the glasses will show a new one",

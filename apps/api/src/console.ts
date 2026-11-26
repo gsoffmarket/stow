@@ -165,7 +165,7 @@ export async function pickers(pool: pg.Pool, workspaceId: string): Promise<Picke
     `select m.id, m.display_name as name,
             (select count(*)::int from assignments a join orders o on o.id = a.order_id
              where a.worker_id = m.id and a.released_at is null and o.terminal is null) as open_orders
-     from members m where m.workspace_id = $1 and m.role in ('PICKER', 'OWNER')
+     from members m where m.workspace_id = $1 and m.role in ('PICKER', 'OWNER') and m.removed_at is null
      order by open_orders, m.display_name, m.id limit 100`,
     [workspaceId],
   );
