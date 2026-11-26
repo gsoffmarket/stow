@@ -547,7 +547,7 @@ function describeResult(result: CommandResult): string {
   if (result.status === 409 && (result.body.code === "STALE_VERSION" || result.body.code === "REVISION_REQUIRED")) {
     return "Not applied: the order changed since this preview. Send the command again.";
   }
-  if (result.status === 400) return `Not applied: unknown SKU ${result.body.skus.join(", ")}.`;
+  if (result.status === 400) return "skus" in result.body ? `Not applied: unknown SKU ${result.body.skus.join(", ")}.` : "Not applied: that member is not a picker.";
   if (result.status === 403) return "Not applied: your role cannot do this.";
   if (result.status === 404) return "Not applied: order not found.";
   return `Not applied: ${result.body.code.toLowerCase().replace(/_/g, " ")}.`;
@@ -768,10 +768,10 @@ async function settle(pool: pg.Pool, id: string, status: "SENT" | "FAILED" | "UN
 async function statusOf(pool: pg.Pool, workspaceId: string, orderId: string, connectionId: string) {
   const order = await pool.query<{
     ref: string; revision: number; version: string; terminal: "COMPLETED" | "CANCELLED" | null; source_message_id: string | null;
-    picker: string | null; tote_id: string | null; ack_revision: number | null; is_paused: boolean; is_cancel_requested: boolean; is_release_requested: boolean; is_blocked: boolean;
+    picker: string | null; tote_id: string | null; ack_revision: number | null; is_accepted: boolean | null; is_paused: boolean; is_cancel_requested: boolean; is_release_requested: boolean; is_blocked: boolean;
     note: "UNREAD" | "READ" | null;
   }>(
-    `select o.ref, o.revision, o.version, o.terminal, o.source_message_id, m.display_name as picker, a.tote_id, a.ack_revision,
+    `select o.ref, o.revision, o.version, o.terminal, o.source_message_id, m.display_name as picker, a.tote_id, a.ack_revision, a.is_accepted,
             o.is_paused, o.is_cancel_requested, o.is_release_requested,
             exists (select 1 from order_exceptions e where e.order_id = o.id and e.status = 'OPEN') as is_blocked,
             (select case when n.read_at is null then 'UNREAD' else 'READ' end from order_messages n
@@ -810,9 +810,9 @@ async function statusOf(pool: pg.Pool, workspaceId: string, orderId: string, con
 }
 
 // The one thing holding an order up, in the order the picker would meet it.
-function holdOf(row: { is_blocked: boolean; is_cancel_requested: boolean; is_release_requested: boolean; is_paused: boolean; ack_revision: number | null; revision: number }) {
+function holdOf(row: { is_accepted: boolean | null; is_blocked: boolean; is_cancel_requested: boolean; is_release_requested: boolean; is_paused: boolean; ack_revision: number | null; revision: number }) {
   if (row.is_blocked) return "BLOCKED" as const;
-  if (row.ack_revision !== null && row.ack_revision !== row.revision) return "AWAITING_PICKER_ACK" as const;
+  if (row.is_accepted === false || (row.ack_revision !== null && row.ack_revision !== row.revision)) return "AWAITING_PICKER_ACK" as const;
   if (row.is_cancel_requested) return "CANCELLING" as const;
   if (row.is_release_requested) return "RELEASING" as const;
   if (row.is_paused) return "PAUSED" as const;
