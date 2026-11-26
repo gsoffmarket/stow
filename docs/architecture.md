@@ -30,7 +30,11 @@ Telegram group ◀── edit status message ◀── outbox ◀┘
 | `apps/api/src/messages.ts` | Coordinator notes to the glasses and picker quick replies to the group. Never change the order. |
 | `apps/api/src/identity.ts` | Mini App sign-in: verifies Telegram's signed launch data, issues sessions, lists memberships. |
 | `apps/api/src/devices.ts` | Glasses pairing: code, approval from the Mini App, one-time token exchange. |
-| `apps/api/src/console.ts` | Read models for the coordinator console. |
+| `apps/api/src/console.ts` | Read models for the coordinator console: the paged order list and its search, order detail, sessions and the onboarding checklist. |
+| `apps/api/src/members.ts` | The team: roles, revoking glasses, removing a member, all owner-only under the workspace lock. |
+| `apps/api/src/connections.ts` | Connected Telegram groups: list them and disconnect one. |
+| `apps/api/src/reports.ts` | Counts over whole days in a time zone, from the event log, and the order history CSV. |
+| `apps/api/src/settings.ts` | Time zone and retention, and the hourly purge of closed orders past retention. |
 | `apps/api/src/local.ts` | Local-only setup, test order and bind-code commands. |
 | `apps/glasses/src/screens.ts` | Pure choice of what the glasses show for a snapshot and link state. |
 | `apps/glasses/src/main.ts` | Even Hub bridge glue: render, input, pairing, polling, command sending. |
@@ -72,6 +76,10 @@ Telegram group ◀── edit status message ◀── outbox ◀┘
 | Glasses secondary actions | A More screen drawn in text containers, opened by swipe | The SDK's native menu: in simulator 0.9.5 it opened empty and could not select items. |
 | Batch picking | Each order keeps its own plan and tote; `planBatch` only orders their steps (acknowledgements, reviews, returns, then picks in walking order), and a batch is claimed all or none | A merged pick list across orders: one wrong count would be hard to attribute to an order, and a blocked order would stall the whole cart. |
 | Hosting | One VPS: Postgres, API and Caddy in Docker Compose | Serverless or Supabase-only: the Telegram loops need a process that runs continuously. |
+| Order list paging | Keyset cursor on (last activity, id), opaque to clients; only the first page is polled | Offset paging: an order that changes mid-scroll would repeat or vanish. |
+| Glasses presence | `last_seen_at` stamped while authenticating a device, at most every 30 s; connected means seen within 90 s on the server clock | A heartbeat endpoint or a write per poll: one more request, or a write every 1.5 s per picker. |
+| Onboarding progress | Derived from the data (catalogue, group, picker, glasses, completed order) | Stored progress flags: they drift when a step is done through the bot instead of the checklist. |
+| Retention | Owner chooses 90 days, 1 year or keep; an hourly in-process purge in bounded batches | A separate job runner: one more moving part for one hourly query. |
 
 ## Defaults applied
 
@@ -89,3 +97,5 @@ Telegram group ◀── edit status message ◀── outbox ◀┘
 - Automatic stock or inventory updates; Stow records worker-confirmed actions only.
 - Reading Telegram messages other than explicit bot commands.
 - Background notifications on the glasses; the app works while it is open.
+- Deleting a workspace from the app; whoever runs the server does that.
+- Ending a picker's glasses session from Sessions; an owner revokes the glasses on the Team page.
