@@ -37,7 +37,7 @@ The core is a pure order engine that keeps two numbers per line: what the coordi
 - **Explicit commands only.** Plain chat is never processed. Changes are previewed with Confirm and Discard buttons, and a confirm after the order moved is refused.
 - **Tenancy in the schema.** Every row references its parent through `(workspace_id, id)`, so cross-workspace links fail at insert time.
 
-See [docs/architecture.md](docs/architecture.md) for the codemap, invariants and decisions.
+See [docs/architecture.md](docs/architecture.md) for the codemap, invariants and decisions, and [docs/demo.md](docs/demo.md) for the demo run sheet.
 
 ## What works today
 
