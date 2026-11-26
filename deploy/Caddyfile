@@ -1,12 +1,22 @@
 # Caddy obtains and renews the HTTPS certificate for STOW_HOST on its own.
+
+# Whose X-Forwarded-For to believe. Only loopback by default, so a client cannot
+# pick its own rate-limit bucket; compose.behind-proxy.yaml trusts the
+# shared proxy on the private network.
+{
+	servers {
+		trusted_proxies static {$STOW_TRUSTED_PROXIES:127.0.0.1/32}
+	}
+}
+
 {$STOW_HOST} {
 	encode zstd gzip
 
 	handle /v1/* {
-		reverse_proxy api:8787
+		reverse_proxy stow-api:8787
 	}
 	handle /health/* {
-		reverse_proxy api:8787
+		reverse_proxy stow-api:8787
 	}
 
 	# The Even Hub glasses app, loaded by the Even Realities app on the phone.
