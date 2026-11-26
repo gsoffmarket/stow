@@ -175,6 +175,17 @@ export function changeMember(token: string, workspaceId: string, memberId: strin
   return call(change.kind === "revoke" ? `${base}/devices/revoke` : `${base}/remove`, { method: "POST", token, body: {} });
 }
 
+/** WorkspaceSettings is what an owner controls: the reports' time zone and how long closed orders are kept. */
+export type WorkspaceSettings = { timeZone: string; retentionDays: 90 | 365 | null };
+
+export function getSettings(token: string, workspaceId: string): Promise<WorkspaceSettings> {
+  return call(`/v1/workspaces/${workspaceId}/settings`, { method: "GET", token });
+}
+
+export function saveSettings(token: string, workspaceId: string, next: WorkspaceSettings): Promise<WorkspaceSettings> {
+  return call(`/v1/workspaces/${workspaceId}/settings`, { method: "POST", token, body: next });
+}
+
 /** Setup is which onboarding steps the workspace has done, read from its data. */
 export type Setup = { hasCatalogue: boolean; hasGroup: boolean; hasPicker: boolean; hasGlasses: boolean; hasCompletedOrder: boolean };
 
