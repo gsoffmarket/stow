@@ -1,5 +1,7 @@
 // Every user-facing string in the Mini App, kept in one place.
 
+import type { Hold, View } from "./api.ts";
+
 export const copy = {
   openFromTelegram: { title: "Open Stow from Telegram", body: "Stow signs you in with your Telegram account. Open it from the Stow bot or your work group." },
   signingIn: "Signing you in…",
@@ -23,4 +25,65 @@ export const copy = {
       UNKNOWN: "Something went wrong. Try again.",
     } as Record<string, string>,
   },
+  orders: {
+    title: "Orders",
+    live: "Live",
+    offline: "Not updating",
+    views: { needs_you: "Needs you", active: "Active", done: "Done" } satisfies Record<View, string>,
+    empty: { needs_you: "Nothing needs you right now.", active: "No open orders. New ones from the group appear here.", done: "Nothing closed in the last week." } satisfies Record<View, string>,
+    progress: (confirmed: number, requested: number) => `${confirmed} of ${requested} confirmed`,
+    unassigned: "Waiting for a picker",
+    pairGlasses: "Pair glasses",
+  },
+  hold: {
+    NONE: "",
+    AWAITING_PICKER: "Awaiting picker",
+    BLOCKED: "Blocked",
+    CANCELLING: "Cancelling",
+    PAUSED: "Paused",
+  } satisfies Record<Hold, string>,
+  phase: { QUEUED: "Queued", PICKING: "Picking", COMPLETED: "Completed", CANCELLED: "Cancelled" },
+  detail: {
+    loading: "Loading order…",
+    back: "Back to orders",
+    lines: "Lines",
+    target: "Target",
+    picked: (n: number) => `picked ${n}`,
+    returnN: (n: number) => `Return × ${n}`,
+    timeline: "Timeline",
+    notes: "Notes",
+    notePlaceholder: "Note to the picker",
+    sendNote: "Send note",
+    revise: "Revise",
+    cancel: "Cancel order",
+    read: "Read",
+    unread: "Not read yet",
+    fromGroup: "Reply",
+    problem: {
+      title: (type: string) => ({ SHORTAGE: "Shortage", DAMAGED: "Damaged item", LOCATION_MISMATCH: "Not at this location", RETURN_BLOCKED: "Cannot return", OTHER: "Problem" })[type] ?? "Problem",
+      found: (sku: string, n: number | null) => (n === null ? `${sku}: no count given` : `${sku}: ${n} more found`),
+      resume: "Resume",
+      reduce: (n: number) => `Reduce to ${n}`,
+      cancel: "Cancel order",
+      waiting: "Waiting for the picker to acknowledge.",
+    },
+  },
+  revise: {
+    title: "Revise order",
+    reason: "Reason for the group",
+    reasonDefault: "Changed in Stow",
+    returnFirst: (n: number) => `${n} already picked will be returned first`,
+    confirm: "Confirm revision",
+    nothing: "Change a target to revise",
+    cancel: "Close",
+  },
+  cancel: { title: "Cancel this order?", returns: (n: number) => (n > 0 ? `${n} picked units must be returned first.` : "Nothing has been picked."), reason: "Reason", confirm: "Cancel order", keep: "Keep order" },
+  errors: {
+    STALE_VERSION: "The order changed while you were looking. Showing the latest.",
+    REVISION_REQUIRED: "The order changed while you were looking. Showing the latest.",
+    OPEN_EXCEPTION: "Resolve the open problem first.",
+    TERMINAL_ORDER: "This order is already closed.",
+    NETWORK: "No connection. Try again.",
+    UNKNOWN: "Something went wrong. Try again.",
+  } as Record<string, string>,
 } as const;
