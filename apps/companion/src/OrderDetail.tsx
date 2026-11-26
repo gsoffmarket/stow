@@ -4,8 +4,8 @@
 // by the server and the screen refreshes instead of guessing.
 
 import { AnimatePresence, m } from "motion/react";
-import { useState, type FormEvent } from "react";
-import { ApiError, getOrder, runCommand, sendNote, type ConsoleCommand, type OrderDetail as Detail } from "./api.ts";
+import { useEffect, useState, type FormEvent } from "react";
+import { ApiError, getOrder, listPickers, runCommand, sendNote, type ConsoleCommand, type OrderDetail as Detail, type Picker } from "./api.ts";
 import { copy } from "./copy.ts";
 import { LiveDot, StatusChip } from "./Orders.tsx";
 import { usePolling } from "./polling.ts";
@@ -17,7 +17,7 @@ type Props = { token: string; workspaceId: string; orderId: string; onBack: () =
 
 export function OrderDetail({ token, workspaceId, orderId, onBack }: Props) {
   const { data: detail, isLive, refresh } = usePolling(() => getOrder(token, workspaceId, orderId), [orderId], 3000);
-  const [sheet, setSheet] = useState<"revise" | "cancel" | null>(null);
+  const [sheet, setSheet] = useState<"revise" | "cancel" | "assign" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -43,6 +43,8 @@ export function OrderDetail({ token, workspaceId, orderId, onBack }: Props) {
   if (!detail) return <p className="text-text-secondary" role="status">{copy.detail.loading}</p>;
   const { order } = detail;
   const isOpen = !order.terminal;
+  // Only an order nobody has started can go to a picker; one being picked stays with its tote.
+  const canAssign = isOpen && order.isAccepted !== true && order.hold !== "CANCELLING";
 
   return (
     <section className="flex flex-col gap-5">
@@ -100,6 +102,8 @@ export function OrderDetail({ token, workspaceId, orderId, onBack }: Props) {
         })}
       </ul>
 
+      {canAssign && <GhostButton onClick={() => setSheet("assign")}>{order.picker ? copy.detail.reassign : copy.detail.assign}</GhostButton>}
+
       {isOpen && (
         <div className="grid grid-cols-2 gap-2">
           <GhostButton onClick={() => setSheet("cancel")}>{copy.detail.cancel}</GhostButton>
@@ -129,6 +133,9 @@ export function OrderDetail({ token, workspaceId, orderId, onBack }: Props) {
 
       <AnimatePresence>
         {sheet === "revise" && <Revise detail={detail} busy={busy} onClose={() => setSheet(null)} onSubmit={async (command) => (await act(command)) && setSheet(null)} />}
+        {sheet === "assign" && (
+          <AssignSheet token={token} workspaceId={workspaceId} busy={busy} onClose={() => setSheet(null)} onPick={async (memberId) => (await act({ type: "ASSIGN_ORDER", payload: { memberId } })) && setSheet(null)} />
+        )}
         {sheet === "cancel" && <CancelSheet detail={detail} busy={busy} onClose={() => setSheet(null)} onSubmit={async (reason) => (await act({ type: "REQUEST_CANCEL", payload: { reason } })) && setSheet(null)} />}
       </AnimatePresence>
     </section>
@@ -224,6 +231,34 @@ function CancelSheet({ detail, busy, onClose, onSubmit }: { detail: Detail; busy
         {copy.cancel.confirm}
       </button>
       <GhostButton onClick={onClose}>{copy.cancel.keep}</GhostButton>
+    </Sheet>
+  );
+}
+
+function AssignSheet({ token, workspaceId, busy, onClose, onPick }: { token: string; workspaceId: string; busy: boolean; onClose: () => void; onPick: (memberId: string) => void }) {
+  const [pickers, setPickers] = useState<Picker[] | null>(null);
+  useEffect(() => {
+    void listPickers(token, workspaceId).then((loaded) => setPickers(loaded.pickers));
+  }, [token, workspaceId]);
+  return (
+    <Sheet label={copy.assign.title} onClose={onClose}>
+      <h2 className="text-[20px] font-medium">{copy.assign.title}</h2>
+      <p className="text-[14px] text-text-secondary">{copy.assign.hint}</p>
+      {!pickers && <p role="status" className="text-[14px] text-text-muted">{copy.assign.loading}</p>}
+      {pickers?.length === 0 && <p className="text-[14px] text-text-muted">{copy.assign.none}</p>}
+      {pickers && pickers.length > 0 && (
+        <ul className="overflow-hidden rounded-[var(--radius-card)] bg-surface-recessed">
+          {pickers.map((picker, index) => (
+            <li key={picker.id} className={index > 0 ? "border-t border-border" : ""}>
+              <button disabled={busy} onClick={() => onPick(picker.id)} className="flex min-h-12 w-full items-center justify-between gap-3 px-4 text-left text-[15px] disabled:opacity-50">
+                {picker.name}
+                <span className={`text-[12px] ${picker.openOrders === 0 ? "text-confirmed" : "text-text-secondary"}`}>{copy.assign.open(picker.openOrders)}</span>
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+      <GhostButton onClick={onClose}>{copy.assign.close}</GhostButton>
     </Sheet>
   );
 }

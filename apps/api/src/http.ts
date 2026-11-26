@@ -13,7 +13,7 @@ import { outstandingPick, outstandingReturn, type Order, type Task } from "@stow
 import { runCommand, startBatch, workerView, type Command, type Role } from "./fulfilment.ts";
 import * as devices from "./devices.ts";
 import { markRead, postNote, quickReplies, sendReply } from "./messages.ts";
-import { listOrders, orderDetail } from "./console.ts";
+import { listOrders, orderDetail, pickers } from "./console.ts";
 import * as catalogue from "./catalogue.ts";
 import { Limiter, limits, type Limit } from "./limits.ts";
 import { memberships, sessionUser, startSession, verifyLaunchData } from "./identity.ts";
@@ -56,6 +56,7 @@ const consoleCommandBody = z.discriminatedUnion("type", [
     }),
   }),
   z.strictObject({ commandId: uuid, type: z.literal("REQUEST_CANCEL"), ...expected, payload: z.strictObject({ reason }) }),
+  z.strictObject({ commandId: uuid, type: z.literal("ASSIGN_ORDER"), ...expected, payload: z.strictObject({ memberId: uuid }) }),
   z.strictObject({
     commandId: uuid,
     type: z.literal("RESOLVE_EXCEPTION"),
@@ -218,6 +219,12 @@ export function buildHttp(options: HttpOptions): FastifyInstance {
     return detail ? ok(reply, request, detail) : fail(reply, request, 404, "NOT_FOUND");
   });
 
+  app.get<{ Params: { wid: string } }>("/v1/workspaces/:wid/pickers", async (request, reply) => {
+    const actor = await coordinator(request, reply, options.pool);
+    if (!actor) return reply;
+    return ok(reply, request, { pickers: await pickers(options.pool, actor.workspaceId) });
+  });
+
   app.post<{ Params: { wid: string; oid: string } }>("/v1/workspaces/:wid/orders/:oid/notes", async (request, reply) => {
     const actor = await coordinator(request, reply, options.pool);
     if (!actor) return reply;
@@ -271,6 +278,7 @@ export function buildHttp(options: HttpOptions): FastifyInstance {
     const command: Command =
       body.type === "REVISE_ORDER" ? { type: "REVISE_ORDER", ...base, reason: body.payload.reason, changes: body.payload.changes }
       : body.type === "REQUEST_CANCEL" ? { type: "REQUEST_CANCEL", ...base, reason: body.payload.reason }
+      : body.type === "ASSIGN_ORDER" ? { type: "ASSIGN_ORDER", ...base, memberId: body.payload.memberId }
       : { type: "RESOLVE_EXCEPTION", ...base, reason: body.payload.reason, resolution: body.payload.resolution };
     const result = await runCommand(options.pool, actor, body.commandId, command);
     if (result.status !== 200) return fail(reply, request, result.status, result.body.code);
@@ -498,6 +506,7 @@ const messages: Record<string, string> = {
   ASSIGNMENT_CONFLICT: "this order belongs to someone else",
   QUANTITY_OUT_OF_RANGE: "the quantity is outside what this task needs",
   ROLE_REQUIRED: "your role cannot do this",
+  NOT_A_PICKER: "orders can only be assigned to pickers in this workspace",
   BATCH_SIZE: "a batch holds 2 to 5 different orders",
   PAIRING_EXPIRED: "that code has expired; the glasses will show a new one",
   NOT_APPROVED: "not approved yet",

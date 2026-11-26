@@ -13,6 +13,8 @@ export type OrderRow = {
   readonly terminal: "COMPLETED" | "CANCELLED" | null;
   readonly hold: Hold;
   readonly picker: string | null;
+  /** False while an assigned picker has not started the order; null when nobody holds it. */
+  readonly isAccepted: boolean | null;
   readonly toteId: string | null;
   readonly confirmed: number;
   readonly requested: number;
@@ -44,11 +46,11 @@ type Queryable = Pick<pg.ClientBase, "query">;
 async function selectOrders(db: Queryable, workspaceId: string, condition: string, params: unknown[]): Promise<OrderRow[]> {
   const { rows } = await db.query<{
     id: string; ref: string; terminal: OrderRow["terminal"]; revision: number; created_at: Date; updated_at: Date;
-    picker: string | null; tote_id: string | null; ack_revision: number | null; is_paused: boolean; is_cancel_requested: boolean; is_release_requested: boolean;
+    picker: string | null; tote_id: string | null; ack_revision: number | null; is_accepted: boolean | null; is_paused: boolean; is_cancel_requested: boolean; is_release_requested: boolean;
     is_blocked: boolean; confirmed: number; requested: number; lines: number;
   }>(
     `select o.id, o.ref, o.terminal, o.revision, o.created_at, o.updated_at, o.is_paused, o.is_cancel_requested, o.is_release_requested,
-            m.display_name as picker, a.tote_id, a.ack_revision,
+            m.display_name as picker, a.tote_id, a.ack_revision, a.is_accepted,
             exists (select 1 from order_exceptions e where e.order_id = o.id and e.status = 'OPEN') as is_blocked,
             l.confirmed, l.requested, l.lines
      from orders o
@@ -67,12 +69,13 @@ async function selectOrders(db: Queryable, workspaceId: string, condition: strin
     ref: row.ref,
     terminal: row.terminal,
     hold: row.is_blocked ? "BLOCKED"
-      : row.ack_revision !== null && row.ack_revision !== row.revision ? "AWAITING_PICKER"
+      : row.is_accepted === false || (row.ack_revision !== null && row.ack_revision !== row.revision) ? "AWAITING_PICKER"
       : row.is_cancel_requested ? "CANCELLING"
       : row.is_release_requested ? "RELEASING"
       : row.is_paused ? "PAUSED"
       : "NONE",
     picker: row.picker,
+    isAccepted: row.is_accepted,
     toteId: row.tote_id,
     confirmed: row.confirmed,
     requested: row.requested,
@@ -151,4 +154,20 @@ function describe(type: string, payload: Record<string, unknown>, skuOf: Map<str
   if (type === "EXCEPTION_RESOLVED") return String(payload.resolution).toLowerCase();
   if (type === "ORDER_CLAIMED" && payload.toteId) return `tote ${String(payload.toteId)}`;
   return null;
+}
+
+/** Picker is someone an order can be assigned to, with how many orders they hold now. */
+export type Picker = { readonly id: string; readonly name: string; readonly openOrders: number };
+
+/** pickers lists the workspace's pickers, least busy first. */
+export async function pickers(pool: pg.Pool, workspaceId: string): Promise<Picker[]> {
+  const { rows } = await pool.query<{ id: string; name: string; open_orders: number }>(
+    `select m.id, m.display_name as name,
+            (select count(*)::int from assignments a join orders o on o.id = a.order_id
+             where a.worker_id = m.id and a.released_at is null and o.terminal is null) as open_orders
+     from members m where m.workspace_id = $1 and m.role in ('PICKER', 'OWNER')
+     order by open_orders, m.display_name, m.id limit 100`,
+    [workspaceId],
+  );
+  return rows.map((row) => ({ id: row.id, name: row.name, openOrders: row.open_orders }));
 }

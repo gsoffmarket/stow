@@ -108,3 +108,66 @@ describe("coordinator console", () => {
     expect((await get(`/v1/workspaces/${workspaceId}/orders`, {})).statusCode).toBe(401);
   });
 });
+
+describe("assigning from the console", () => {
+  async function queuedOrder() {
+    const created = await createOrder(db.pool, {
+      workspaceId,
+      createdBy: (await db.pool.query<{ id: string }>("select id from members where telegram_user_id = '100'")).rows[0]!.id,
+      sourceKey: `test:${randomUUID()}`,
+      connectionId: null,
+      sourceMessageId: null,
+      request: { ref: null, lines: [{ sku: "TS-BLK-M", quantity: 1 }] },
+    });
+    if (!created.ok || !("orderId" in created)) throw new Error("not created");
+    return created.orderId;
+  }
+  const newPicker = async (name: string) =>
+    (await db.pool.query<{ id: string }>("insert into members (workspace_id, display_name, role) values ($1, $2, 'PICKER') returning id", [workspaceId, name])).rows[0]!.id;
+  const assignTo = async (orderId: string, memberId: string) => {
+    const { order } = (await app.inject({ method: "GET", url: `/v1/workspaces/${workspaceId}/orders/${orderId}`, headers: coordinatorHeaders })).json().data;
+    return app.inject({
+      method: "POST", url: `/v1/workspaces/${workspaceId}/console/commands`, headers: coordinatorHeaders,
+      payload: { commandId: randomUUID(), type: "ASSIGN_ORDER", orderId, expectedRevision: order.revision, expectedVersion: order.version, payload: { memberId } },
+    });
+  };
+
+  test("lists pickers, assigns one, and only that picker is offered the order", async () => {
+    const orderId = await queuedOrder();
+    const chosen = await newPicker("Picker 07");
+    const other = await newPicker("Picker 08");
+    const listed = (await app.inject({ method: "GET", url: `/v1/workspaces/${workspaceId}/pickers`, headers: coordinatorHeaders })).json().data.pickers;
+    expect(listed).toEqual(expect.arrayContaining([{ id: chosen, name: "Picker 07", openOrders: 0 }]));
+
+    expect((await assignTo(orderId, chosen)).statusCode).toBe(200);
+    const { order } = (await app.inject({ method: "GET", url: `/v1/workspaces/${workspaceId}/orders/${orderId}`, headers: coordinatorHeaders })).json().data;
+    expect({ picker: order.picker, hold: order.hold }).toEqual({ picker: "Picker 07", hold: "AWAITING_PICKER" });
+
+    const mine = await workerView(db.pool, workspaceId, chosen);
+    expect({ order: mine.order?.id, plan: mine.plan.kind }).toEqual({ order: orderId, plan: "OFFER" });
+    expect((await workerView(db.pool, workspaceId, other)).order?.id).not.toBe(orderId);
+
+    const claimed = await runCommand(db.pool, { workspaceId, memberId: chosen, role: "PICKER" }, randomUUID(), { type: "CLAIM_ORDER", orderId, revision: 1, version: 2, toteId: "A" });
+    expect(claimed.status).toBe(200);
+    const after = (await app.inject({ method: "GET", url: `/v1/workspaces/${workspaceId}/orders/${orderId}`, headers: coordinatorHeaders })).json().data.order;
+    expect({ hold: after.hold, toteId: after.toteId }).toEqual({ hold: "NONE", toteId: "A" });
+  });
+
+  test("moves an unstarted order to another picker, leaving one live assignment", async () => {
+    const orderId = await queuedOrder();
+    await assignTo(orderId, await newPicker("Picker 09"));
+    const second = await newPicker("Picker 10");
+    expect((await assignTo(orderId, second)).statusCode).toBe(200);
+    const live = await db.pool.query("select worker_id from assignments where order_id = $1 and released_at is null", [orderId]);
+    expect(live.rows).toEqual([{ worker_id: second }]);
+  });
+
+  test("refuses a member who is not a picker, and a picker cannot assign", async () => {
+    const orderId = await queuedOrder();
+    const coordinatorId = (await db.pool.query<{ id: string }>("select id from members where telegram_user_id = '100'")).rows[0]!.id;
+    const refused = await assignTo(orderId, coordinatorId);
+    expect({ status: refused.statusCode, code: refused.json().error.code }).toEqual({ status: 400, code: "NOT_A_PICKER" });
+    const byPicker = await app.inject({ method: "GET", url: `/v1/workspaces/${workspaceId}/pickers`, headers: pickerHeaders });
+    expect(byPicker.statusCode).toBe(404);
+  });
+});

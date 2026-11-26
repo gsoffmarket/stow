@@ -14,6 +14,7 @@ import type pg from "pg";
 import {
   acknowledge,
   acknowledgeResolution,
+  assign,
   batchLimits,
   cancelRelease,
   claim,
@@ -69,17 +70,19 @@ export type Command = Expected &
     | { readonly type: "COMPLETE_ORDER" | "ACK_REVISION" | "PAUSE_ORDER" | "RESUME_ORDER" | "CLOSE_CANCELLED" | "PREPARE_RELEASE" | "CANCEL_RELEASE" | "RELEASE_ORDER" }
     | { readonly type: "REPORT_EXCEPTION"; readonly exceptionType: ExceptionType; readonly reportedQty: number | null }
     | { readonly type: "ACK_RESOLUTION"; readonly exceptionId: string }
+    | { readonly type: "ASSIGN_ORDER"; readonly memberId: string }
     | { readonly type: "REVISE_ORDER"; readonly reason: string; readonly changes: readonly RevisionChange[] }
     | { readonly type: "REQUEST_CANCEL"; readonly reason: string }
     | { readonly type: "RESOLVE_EXCEPTION"; readonly reason: string; readonly resolution: ResolutionRequest }
   );
 
-const coordinatorCommands = new Set<Command["type"]>(["REVISE_ORDER", "REQUEST_CANCEL", "RESOLVE_EXCEPTION"]);
+const coordinatorCommands = new Set<Command["type"]>(["REVISE_ORDER", "REQUEST_CANCEL", "RESOLVE_EXCEPTION", "ASSIGN_ORDER"]);
 
 export type CommandResult =
   | { readonly status: 200; readonly body: { readonly outcome: "APPLIED"; readonly seq: string; readonly orderId: string; readonly version: string } }
   | { readonly status: 200; readonly body: { readonly outcome: "NO_CHANGE"; readonly seq: null; readonly orderId: string; readonly version: string } }
   | { readonly status: 400; readonly body: { readonly code: "UNKNOWN_SKU"; readonly skus: readonly string[] } }
+  | { readonly status: 400; readonly body: { readonly code: "NOT_A_PICKER" } }
   | { readonly status: 403; readonly body: { readonly code: "ROLE_REQUIRED" } }
   | { readonly status: 404; readonly body: { readonly code: "NOT_FOUND" } }
   | { readonly status: 409; readonly body: { readonly code: Exclude<Rejection, "NO_CHANGE"> | "IDEMPOTENCY_CONFLICT" } };
@@ -135,6 +138,7 @@ async function execute(client: pg.ClientBase, actor: Actor, commandId: string, c
   const products = await resolveSkus(client, actor.workspaceId, skusIn(command));
   const unknown = skusIn(command).filter((sku) => !products.has(sku));
   if (unknown.length > 0) return { status: 400, body: { code: "UNKNOWN_SKU", skus: unknown } };
+  if (command.type === "ASSIGN_ORDER" && !(await isPicker(client, actor.workspaceId, command.memberId))) return { status: 400, body: { code: "NOT_A_PICKER" } };
 
   const outcome = apply(before, actor.memberId, command, products);
   if (!outcome.ok) {
@@ -213,6 +217,11 @@ export async function startBatch(pool: pg.Pool, actor: Actor, commandId: string,
   );
 }
 
+async function isPicker(client: pg.ClientBase, workspaceId: string, memberId: string): Promise<boolean> {
+  const { rowCount } = await client.query("select 1 from members where workspace_id = $1 and id = $2 and role in ('PICKER', 'OWNER')", [workspaceId, memberId]);
+  return rowCount === 1;
+}
+
 type Product = { id: string; sku: string; name: string; bin: string | null; route_rank: number };
 
 function skusIn(command: Command): string[] {
@@ -240,6 +249,8 @@ function apply(order: Order, memberId: string, command: Command, products: Map<s
   switch (command.type) {
     case "CLAIM_ORDER":
       return claim(order, memberId, command.toteId, expected);
+    case "ASSIGN_ORDER":
+      return assign(order, command.memberId, expected);
     case "CONFIRM_TASK":
       return confirm(order, memberId, { ...expected, kind: command.kind, lineId: command.lineId, quantity: command.quantity });
     case "COMPLETE_ORDER":
@@ -280,6 +291,7 @@ function apply(order: Order, memberId: string, command: Command, products: Map<s
 
 const eventTypes: Record<Exclude<Command["type"], "CONFIRM_TASK">, string> = {
   CLAIM_ORDER: "ORDER_CLAIMED",
+  ASSIGN_ORDER: "ORDER_ASSIGNED",
   COMPLETE_ORDER: "ORDER_COMPLETED",
   ACK_REVISION: "REVISION_ACKNOWLEDGED",
   PAUSE_ORDER: "ORDER_PAUSED",
@@ -306,6 +318,8 @@ function eventPayload(command: Command, after: Order): Record<string, unknown> {
       return { lineId: command.lineId, quantity: command.quantity };
     case "CLAIM_ORDER":
       return { toteId: command.toteId };
+    case "ASSIGN_ORDER":
+      return { memberId: command.memberId };
     case "REPORT_EXCEPTION":
       return { exceptionId: after.exception?.id, type: command.exceptionType, reportedQty: command.reportedQty };
     case "RESOLVE_EXCEPTION":
@@ -673,15 +687,23 @@ async function saveOrder(client: pg.ClientBase, actor: Actor, before: Order, aft
       await client.query("update order_lines set requested_qty = $3, picked_qty = $4 where workspace_id = $1 and id = $2", [ws, line.id, line.requested, line.picked]);
     }
   }
-  if (!before.assignment && after.assignment) {
-    await client.query(
-      "insert into assignments (workspace_id, order_id, worker_id, tote_id, is_accepted, ack_revision) values ($1, $2, $3, $4, true, $5)",
-      [ws, after.id, after.assignment.workerId, after.assignment.toteId, after.assignment.ackRevision],
-    );
-  } else if (before.assignment && !after.assignment) {
+  // A coordinator can move an unaccepted order between pickers, so an
+  // assignment is replaced rather than edited when its worker changes.
+  const was = before.assignment;
+  const now = after.assignment;
+  if (was && now?.workerId !== was.workerId) {
     await client.query("update assignments set released_at = now() where workspace_id = $1 and order_id = $2 and released_at is null", [ws, after.id]);
-  } else if (before.assignment && after.assignment && before.assignment.ackRevision !== after.assignment.ackRevision) {
-    await client.query("update assignments set ack_revision = $3 where workspace_id = $1 and order_id = $2 and released_at is null", [ws, after.id, after.assignment.ackRevision]);
+  }
+  if (now && now.workerId !== was?.workerId) {
+    await client.query(
+      "insert into assignments (workspace_id, order_id, worker_id, tote_id, is_accepted, ack_revision) values ($1, $2, $3, $4, $5, $6)",
+      [ws, after.id, now.workerId, now.toteId, now.isAccepted, now.ackRevision],
+    );
+  } else if (was && now && (was.isAccepted !== now.isAccepted || was.toteId !== now.toteId || was.ackRevision !== now.ackRevision)) {
+    await client.query(
+      "update assignments set is_accepted = $3, tote_id = $4, ack_revision = $5 where workspace_id = $1 and order_id = $2 and released_at is null",
+      [ws, after.id, now.isAccepted, now.toteId, now.ackRevision],
+    );
   }
   await saveException(client, actor, before, after, command);
   if (after.revision !== before.revision) {
