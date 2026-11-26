@@ -19,7 +19,7 @@ import { createOrder, loadOrder, runCommand, transaction, type Command, type Com
 export type Telegram = { readonly pool: pg.Pool; readonly api: BotApi; readonly botAlias: string; readonly botUsername: string };
 
 /** StoredMessage is the minimum kept from a command message; other updates keep nothing. */
-type StoredMessage = { kind?: "message"; chatId: string; chatType: string; fromId: string; messageId: number; text: string };
+type StoredMessage = { kind?: "message"; chatId: string; chatType: string; fromId: string; fromName: string; messageId: number; text: string };
 
 /** StoredPress is the minimum kept from a button press under one of the bot's messages. */
 type StoredPress = { kind: "press"; callbackId: string; chatId: string; fromId: string; messageId: number; data: string };
@@ -45,7 +45,14 @@ function commandMessage(message: Message | undefined): StoredMessage | null {
   if (!message?.text?.startsWith("/") || !message.from || message.from.is_bot) return null;
   // An anonymous admin or a forward does not identify the person acting.
   if (message.sender_chat || message.forward_origin) return null;
-  return { chatId: String(message.chat.id), chatType: message.chat.type, fromId: String(message.from.id), messageId: message.message_id, text: message.text };
+  return {
+    chatId: String(message.chat.id),
+    chatType: message.chat.type,
+    fromId: String(message.from.id),
+    fromName: message.from.first_name.slice(0, 80) || "Member",
+    messageId: message.message_id,
+    text: message.text,
+  };
 }
 
 function buttonPress(press: CallbackQuery | undefined): StoredPress | null {
@@ -87,8 +94,19 @@ async function handle(telegram: Telegram, message: StoredMessage | StoredPress):
   const reply = (text: string) => telegram.api.sendMessage(message.chatId, text, message.messageId);
   switch (command.name) {
     case "start":
+      await reply(await welcome(telegram, message, command.args));
+      return;
     case "help":
       await reply(helpText);
+      return;
+    case "setup":
+      await reply(await setup(telegram.pool, message, command.args));
+      return;
+    case "stow_connect":
+      await reply(await connect(telegram.pool, message));
+      return;
+    case "invite":
+      await reply(await invite(telegram, message, command.args));
       return;
     case "stow_bind":
       await reply(await bind(telegram.pool, message, command.args));
@@ -109,6 +127,9 @@ async function handle(telegram: Telegram, message: StoredMessage | StoredPress):
 const helpText = [
   "Stow turns orders in this group into picking instructions on Even G2.",
   "",
+  "Owners, in a private chat with the bot: /setup NAME creates your workspace, /invite picker or /invite coordinator makes a join link.",
+  "In your work group: /stow_connect connects it to your workspace.",
+  "",
   "/order [REF] then one line per item:",
   "SKU x QTY",
   "",
@@ -119,6 +140,104 @@ const helpText = [
   "",
   "Stow only reads commands sent to it. It does not read other messages.",
 ].join("\n");
+
+const isPrivate = (message: StoredMessage) => message.chatType === "private";
+const inviteHash = (token: string) => createHash("sha256").update(token).digest("hex");
+
+// /start in a private chat: either an invite link being opened, or a person
+// finding the bot for the first time.
+async function welcome(telegram: Telegram, message: StoredMessage, payload: string): Promise<string> {
+  if (!isPrivate(message)) return helpText;
+  const invite = /^inv_([A-Za-z0-9_-]{32})$/.exec(payload)?.[1];
+  if (invite) return join(telegram.pool, message, invite);
+  const { rows } = await telegram.pool.query<{ name: string; role: string }>(
+    "select w.name, m.role from members m join workspaces w on w.id = m.workspace_id where m.telegram_user_id = $1 order by w.name",
+    [message.fromId],
+  );
+  if (rows.length === 0) return "Welcome to Stow. To start a workspace for your team, send:\n/setup Your stockroom name\n\nIf someone invited you, open the link they sent.";
+  return [`You are in ${rows.length === 1 ? "one workspace" : `${rows.length} workspaces`}:`, ...rows.map((row) => `${row.name} (${row.role.toLowerCase()})`)].join("\n");
+}
+
+// /setup NAME in a private chat creates a workspace with the sender as owner.
+async function setup(pool: pg.Pool, message: StoredMessage, name: string): Promise<string> {
+  if (!isPrivate(message)) return "Send /setup in a private chat with me, not in a group.";
+  const trimmed = name.trim().slice(0, 80);
+  if (!trimmed) return "Give the workspace a name, for example:\n/setup Lagos stockroom";
+  const owned = await pool.query("select 1 from members where telegram_user_id = $1 and role = 'OWNER' limit 1", [message.fromId]);
+  if (owned.rowCount) return "You already own a workspace. Send /start to see it.";
+  await transaction(pool, async (client) => {
+    const workspace = await client.query<{ id: string }>("insert into workspaces (name) values ($1) returning id", [trimmed]);
+    await client.query("insert into members (workspace_id, display_name, role, telegram_user_id) values ($1, $2, 'OWNER', $3)", [
+      workspace.rows[0]!.id,
+      message.fromName,
+      message.fromId,
+    ]);
+  });
+  return `Created ${trimmed}. Next:\n1. Add me to your work group and send /stow_connect there.\n2. Send /invite picker here for each picker.`;
+}
+
+// /stow_connect in a group, by the owner of exactly one workspace. Telegram
+// has already proven who sent it, so no code is needed.
+async function connect(pool: pg.Pool, message: StoredMessage): Promise<string> {
+  if (message.chatType !== "group" && message.chatType !== "supergroup") return "Send /stow_connect in your work group.";
+  const owned = await pool.query<{ workspace_id: string; id: string; name: string }>(
+    "select m.workspace_id, m.id, w.name from members m join workspaces w on w.id = m.workspace_id where m.telegram_user_id = $1 and m.role = 'OWNER'",
+    [message.fromId],
+  );
+  const workspace = owned.rows[0];
+  if (!workspace) return "Only a workspace owner can connect a group. Send /setup to me in a private chat first.";
+  const bound = await pool.query("select 1 from telegram_connections where chat_id = $1 and status = 'ACTIVE'", [message.chatId]);
+  if (bound.rowCount) return "This group is already connected to Stow.";
+  await pool.query("insert into telegram_connections (workspace_id, chat_id, status, bound_by) values ($1, $2, 'ACTIVE', $3)", [
+    workspace.workspace_id,
+    message.chatId,
+    workspace.id,
+  ]);
+  return `Connected to ${workspace.name}. Orders sent here with /order now go to Stow.`;
+}
+
+// /invite picker|coordinator in a private chat, by an owner: a one-time
+// link that opens this bot and adds whoever opens it.
+async function invite(telegram: Telegram, message: StoredMessage, args: string): Promise<string> {
+  if (!isPrivate(message)) return "Send /invite in a private chat with me, so the link is not shared with the group.";
+  const role = args.trim().toUpperCase();
+  if (role !== "PICKER" && role !== "COORDINATOR") return "Use /invite picker or /invite coordinator.";
+  const owner = await telegram.pool.query<{ workspace_id: string; id: string }>(
+    "select workspace_id, id from members where telegram_user_id = $1 and role = 'OWNER' limit 1",
+    [message.fromId],
+  );
+  if (!owner.rows[0]) return "Only a workspace owner can invite people.";
+  const token = randomBytes(24).toString("base64url");
+  await telegram.pool.query(
+    "insert into member_invites (workspace_id, token_hash, role, created_by, expires_at) values ($1, $2, $3, $4, now() + interval '24 hours')",
+    [owner.rows[0].workspace_id, inviteHash(token), role, owner.rows[0].id],
+  );
+  return `Send this link to your ${role.toLowerCase()}. It works once, for 24 hours:\nhttps://t.me/${telegram.botUsername}?start=inv_${token}`;
+}
+
+async function join(pool: pg.Pool, message: StoredMessage, token: string): Promise<string> {
+  return transaction(pool, async (client) => {
+    const { rows } = await client.query<{ id: string; workspace_id: string; role: string; name: string; expired: boolean; consumed: boolean }>(
+      `select i.id, i.workspace_id, i.role, w.name, i.expires_at < now() as expired, i.consumed_at is not null as consumed
+       from member_invites i join workspaces w on w.id = i.workspace_id where i.token_hash = $1 for update of i`,
+      [inviteHash(token)],
+    );
+    const found = rows[0];
+    if (!found || found.consumed) return "This invite link is not valid. Ask for a new one.";
+    if (found.expired) return "This invite link has expired. Ask for a new one.";
+    const already = await client.query("select 1 from members where workspace_id = $1 and telegram_user_id = $2", [found.workspace_id, message.fromId]);
+    if (already.rowCount) return `You are already in ${found.name}.`;
+    await client.query("update member_invites set consumed_at = now() where id = $1", [found.id]);
+    await client.query("insert into members (workspace_id, display_name, role, telegram_user_id) values ($1, $2, $3, $4)", [
+      found.workspace_id,
+      message.fromName,
+      found.role,
+      message.fromId,
+    ]);
+    const next = found.role === "PICKER" ? "Open Stow on your Even G2 and enter the code it shows in the Stow app here." : "You can now send orders in the work group.";
+    return `Welcome to ${found.name} as ${found.role.toLowerCase()}. ${next}`;
+  });
+}
 
 /** hashCode is how bind codes are stored and looked up. */
 export function hashCode(code: string): string {
