@@ -143,7 +143,11 @@ export type Rejection =
   | "ASSIGNMENT_CONFLICT"
   | "TASK_CHANGED"
   | "QUANTITY_OUT_OF_RANGE"
-  | "INVALID_TRANSITION";
+  | "INVALID_TRANSITION"
+  | "NO_CHANGE"
+  | "DUPLICATE_SKU"
+  | "ORDER_TOO_LARGE"
+  | "OPEN_EXCEPTION";
 
 export type Outcome = { readonly ok: true; readonly order: Order } | { readonly ok: false; readonly code: Rejection };
 
@@ -213,4 +217,92 @@ function assertInvariants(order: Order): Order {
     }
   }
   return order;
+}
+
+/** Limits from the PRD: per-line and per-order unit caps. */
+export const limits = { unitsPerLine: 10_000, unitsPerOrder: 20_000, lines: 100 } as const;
+
+/**
+ * Change is one coordinator edit. Quantities are absolute targets, never
+ * increments, so a repeated message cannot double a line. A line's SKU is
+ * never rewritten; a different SKU is a new line.
+ */
+export type Change =
+  | { readonly kind: "SET_QUANTITY"; readonly lineId: string; readonly quantity: number }
+  | { readonly kind: "ADD_LINE"; readonly line: Omit<Line, "requested" | "picked" | "creationIndex">; readonly quantity: number };
+
+/**
+ * revise applies coordinator changes as one new revision. Picked counts are
+ * untouched: if a target drops below what is already in the tote, the plan
+ * turns the difference into a return. The worker must acknowledge before any
+ * further confirmation, because the acknowledged revision no longer matches.
+ */
+export function revise(order: Order, changes: readonly Change[], expected: Expected): Outcome {
+  const stale = checkFresh(order, expected);
+  if (stale) return stale;
+  if (order.exception?.status === "OPEN") return { ok: false, code: "OPEN_EXCEPTION" };
+  const next = applyChanges(order, changes);
+  if (!next.ok) return next;
+  if (sameTargets(order.lines, next.lines)) return { ok: false, code: "NO_CHANGE" };
+  return { ok: true, order: { ...order, lines: next.lines, revision: order.revision + 1, version: order.version + 1 } };
+}
+
+function applyChanges(order: Order, changes: readonly Change[]): { ok: true; lines: Line[] } | { ok: false; code: Rejection } {
+  const lines = [...order.lines];
+  for (const change of changes) {
+    if (!Number.isInteger(change.quantity) || change.quantity < 0 || change.quantity > limits.unitsPerLine) {
+      return { ok: false, code: "QUANTITY_OUT_OF_RANGE" };
+    }
+    if (change.kind === "SET_QUANTITY") {
+      const index = lines.findIndex((line) => line.id === change.lineId);
+      if (index < 0) return { ok: false, code: "INVALID_TRANSITION" };
+      lines[index] = { ...lines[index]!, requested: change.quantity };
+    } else {
+      if (lines.some((line) => line.sku === change.line.sku || line.id === change.line.id)) return { ok: false, code: "DUPLICATE_SKU" };
+      if (change.quantity === 0) return { ok: false, code: "QUANTITY_OUT_OF_RANGE" };
+      const creationIndex = Math.max(-1, ...lines.map((line) => line.creationIndex)) + 1;
+      lines.push({ ...change.line, requested: change.quantity, picked: 0, creationIndex });
+    }
+  }
+  if (lines.length > limits.lines) return { ok: false, code: "ORDER_TOO_LARGE" };
+  if (lines.reduce((sum, line) => sum + line.requested, 0) > limits.unitsPerOrder) return { ok: false, code: "ORDER_TOO_LARGE" };
+  return { ok: true, lines };
+}
+
+function sameTargets(before: readonly Line[], after: readonly Line[]): boolean {
+  return before.length === after.length && after.every((line) => before.find((old) => old.id === line.id)?.requested === line.requested);
+}
+
+/** acknowledge records that the worker has seen the current revision. */
+export function acknowledge(order: Order, workerId: string, expected: Expected): Outcome {
+  const stale = checkFresh(order, expected);
+  if (stale) return stale;
+  if (plan(order, workerId).kind !== "REVISION_ACK") return { ok: false, code: "INVALID_TRANSITION" };
+  const assignment = { ...order.assignment!, ackRevision: order.revision };
+  return { ok: true, order: { ...order, assignment, version: order.version + 1 } };
+}
+
+/**
+ * requestCancel sets every target to zero as a new revision. With nothing in
+ * a tote and nobody assigned, the order closes at once; otherwise the picker
+ * returns everything and closes it, so goods are never left unaccounted for.
+ */
+export function requestCancel(order: Order, expected: Expected): Outcome {
+  const stale = checkFresh(order, expected);
+  if (stale) return stale;
+  const lines = order.lines.map((line) => ({ ...line, requested: 0 }));
+  const isEmpty = lines.every((line) => line.picked === 0);
+  const terminal = isEmpty && !order.assignment ? ("CANCELLED" as const) : null;
+  return {
+    ok: true,
+    order: { ...order, lines, isCancelRequested: true, terminal, revision: order.revision + 1, version: order.version + 1 },
+  };
+}
+
+/** closeCancelled finishes a cancellation once every picked unit is back. */
+export function closeCancelled(order: Order, workerId: string, expected: Expected): Outcome {
+  const stale = checkFresh(order, expected);
+  if (stale) return stale;
+  if (plan(order, workerId).kind !== "REVIEW_CANCEL") return { ok: false, code: "INVALID_TRANSITION" };
+  return { ok: true, order: { ...order, terminal: "CANCELLED", version: order.version + 1 } };
 }
