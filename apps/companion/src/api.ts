@@ -155,6 +155,13 @@ export async function ordersCsv(token: string, workspaceId: string, range: Range
 
 export type Member = { id: string; name: string; role: Role; isLinked: boolean; devices: number; openOrders: number; isYou: boolean };
 
+/** GlassesSession is a paired pair of glasses: who wears it, whether it is polling, and what it holds. */
+export type GlassesSession = { id: string; label: string; picker: string; pairedAt: string; lastSeenAt: string | null; isConnected: boolean; orders: { ref: string; toteId: string | null }[] };
+
+export function listSessions(token: string, workspaceId: string): Promise<{ sessions: GlassesSession[] }> {
+  return call(`/v1/workspaces/${workspaceId}/sessions`, { method: "GET", token });
+}
+
 export function listMembers(token: string, workspaceId: string): Promise<{ members: Member[] }> {
   return call(`/v1/workspaces/${workspaceId}/members`, { method: "GET", token });
 }
