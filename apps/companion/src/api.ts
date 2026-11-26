@@ -103,3 +103,19 @@ export function runCommand(token: string, workspaceId: string, detail: OrderDeta
     body: { commandId: crypto.randomUUID(), orderId: detail.order.id, expectedRevision: detail.order.revision, expectedVersion: detail.order.version, ...command },
   });
 }
+
+export type Product = { sku: string; name: string; bin: string | null; routeRank: number };
+export type RowError = { line: number; field: string; problem: string };
+export type PreviewRow = { line: number; sku: string; name: string; bin: string | null; routeRank: number; fate: "NEW" | "UPDATE" | "UNCHANGED" };
+
+export function listProducts(token: string, workspaceId: string): Promise<{ products: Product[] }> {
+  return call(`/v1/workspaces/${workspaceId}/catalogue`, { method: "GET", token });
+}
+
+export function previewImport(token: string, workspaceId: string, csv: string): Promise<{ rows: PreviewRow[]; errors: RowError[] }> {
+  return call(`/v1/workspaces/${workspaceId}/catalogue/preview`, { method: "POST", token, body: { csv } });
+}
+
+export function commitImport(token: string, workspaceId: string, csv: string, allowUpdates: boolean): Promise<{ added: number; updated: number; unchanged: number }> {
+  return call(`/v1/workspaces/${workspaceId}/catalogue/commit`, { method: "POST", token, body: { csv, allowUpdates } });
+}

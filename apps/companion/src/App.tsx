@@ -4,6 +4,7 @@
 import { useEffect, useState } from "react";
 import { signIn, type Session } from "./api.ts";
 import { copy } from "./copy.ts";
+import { Catalogue } from "./Catalogue.tsx";
 import { OrderDetail } from "./OrderDetail.tsx";
 import { Orders } from "./Orders.tsx";
 import { Pair } from "./Pair.tsx";
@@ -49,17 +50,21 @@ export function App() {
 
 function Signed({ session, view, setView }: { session: Session; view: "home" | "pair"; setView: (view: "home" | "pair") => void }) {
   const [openOrder, setOpenOrder] = useState<string | null>(null);
+  const [showCatalogue, setShowCatalogue] = useState(false);
   const pickers = session.memberships.filter((m) => m.role === "PICKER" || m.role === "OWNER");
   const coordinates = session.memberships.find((m) => m.role === "COORDINATOR" || m.role === "OWNER");
   if (session.memberships.length === 0) return <Message title={copy.noWorkspace.title} body={copy.noWorkspace.body} />;
   if (view === "pair" && pickers.length > 0) return <Pair token={session.token} workspaces={pickers} onBack={() => setView("home")} />;
+  if (coordinates && showCatalogue) {
+    return <Catalogue token={session.token} workspaceId={coordinates.workspaceId} onBack={() => setShowCatalogue(false)} />;
+  }
   if (coordinates && openOrder) {
     return <OrderDetail token={session.token} workspaceId={coordinates.workspaceId} orderId={openOrder} onBack={() => setOpenOrder(null)} />;
   }
   if (coordinates) {
     return (
       <>
-        <Orders token={session.token} workspaceId={coordinates.workspaceId} onOpen={setOpenOrder} />
+        <Orders token={session.token} workspaceId={coordinates.workspaceId} onOpen={setOpenOrder} onCatalogue={() => setShowCatalogue(true)} />
         {pickers.length > 0 && <GhostButton onClick={() => setView("pair")}>{copy.orders.pairGlasses}</GhostButton>}
       </>
     );
