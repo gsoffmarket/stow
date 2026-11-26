@@ -157,7 +157,7 @@ export const copy = {
         ["Orders", "every order in three tabs: Needs you, Active and Done. Search by reference, SKU or picker within the open tab."],
         ["Order page", "lines with target and picked counts, the timeline, notes to the picker, and Assign picker, Revise and Cancel order."],
         ["New order", "build an order from the catalogue without typing in the group."],
-        ["Catalogue", "the products Stow knows, and CSV import."],
+        ["Catalogue", "the products Stow knows, with CSV import and export."],
         ["Team", "who is in the workspace, their roles and glasses. Owners change roles, sign glasses out and remove people here."],
         ["Sessions", "which glasses are connected right now and which orders each picker holds."],
         ["Telegram", "connected groups, whether messages to them are getting through, and disconnecting a group."],
@@ -471,6 +471,8 @@ export const copy = {
     tickFirst: "Tick the box to include the changes",
     importing: "Importing…",
     done: (added: number, updated: number) => `Imported: ${added} added, ${updated} changed.`,
+    export: "Export as CSV",
+    exporting: "Preparing…",
   },
   cancel: { title: "Cancel this order?", returns: (n: number) => (n > 0 ? `${n} picked units must be returned first.` : "Nothing has been picked."), reason: "Reason", confirm: "Cancel order", keep: "Keep order" },
   errors: {

@@ -135,11 +135,21 @@ export function getReport(token: string, workspaceId: string, range: RangeQuery)
   return call(`/v1/workspaces/${workspaceId}/reports?${rangeParams(range)}`, { method: "GET", token });
 }
 
-/** ordersCsv fetches the order history file; it is text, not the usual JSON envelope. */
-export async function ordersCsv(token: string, workspaceId: string, range: RangeQuery): Promise<Blob> {
+/** ordersCsv fetches the order history file. */
+export function ordersCsv(token: string, workspaceId: string, range: RangeQuery): Promise<Blob> {
+  return csvFile(`/v1/workspaces/${workspaceId}/reports/orders.csv?${rangeParams(range)}`, token);
+}
+
+/** catalogueCsv fetches the active catalogue in the columns import reads. */
+export function catalogueCsv(token: string, workspaceId: string): Promise<Blob> {
+  return csvFile(`/v1/workspaces/${workspaceId}/catalogue.csv`, token);
+}
+
+// CSV files are text, not the usual JSON envelope; errors still come as JSON.
+async function csvFile(path: string, token: string): Promise<Blob> {
   let response: Response;
   try {
-    response = await fetch(`${apiUrl}/v1/workspaces/${workspaceId}/reports/orders.csv?${rangeParams(range)}`, {
+    response = await fetch(`${apiUrl}${path}`, {
       headers: { authorization: `Bearer ${token}` },
       signal: AbortSignal.timeout(30_000),
     });

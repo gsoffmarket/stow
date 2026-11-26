@@ -4,11 +4,11 @@
 
 import { AnimatePresence, m } from "motion/react";
 import { useState } from "react";
-import { ApiError, commitImport, listProducts, previewImport, type PreviewRow, type RowError } from "./api.ts";
+import { ApiError, catalogueCsv, commitImport, listProducts, previewImport, type PreviewRow, type RowError } from "./api.ts";
 import { copy } from "./copy.ts";
 import { usePolling } from "./polling.ts";
 import { haptic } from "./telegram.ts";
-import { BackLink, PrimaryButton } from "./ui.tsx";
+import { BackLink, GhostButton, PrimaryButton } from "./ui.tsx";
 
 type Props = { token: string; workspaceId: string; onBack: () => void };
 type Checked = { rows: PreviewRow[]; errors: RowError[] };
@@ -18,7 +18,7 @@ export function Catalogue({ token, workspaceId, onBack }: Props) {
   const [csv, setCsv] = useState("");
   const [checked, setChecked] = useState<Checked | null>(null);
   const [allowUpdates, setAllowUpdates] = useState(false);
-  const [state, setState] = useState<"idle" | "checking" | "importing">("idle");
+  const [state, setState] = useState<"idle" | "checking" | "importing" | "exporting">("idle");
   const [message, setMessage] = useState<string | null>(null);
 
   const updates = checked?.rows.filter((row) => row.fate === "UPDATE").length ?? 0;
@@ -48,6 +48,24 @@ export function Catalogue({ token, workspaceId, onBack }: Props) {
       setCsv("");
       setChecked(null);
       await refresh();
+    } catch (error) {
+      haptic("error");
+      setMessage(copy.errors[error instanceof ApiError ? error.code : "UNKNOWN"] ?? copy.errors.UNKNOWN!);
+    } finally {
+      setState("idle");
+    }
+  }
+
+  async function download() {
+    setState("exporting");
+    setMessage(null);
+    try {
+      const link = document.createElement("a");
+      link.href = URL.createObjectURL(await catalogueCsv(token, workspaceId));
+      link.download = "stow-catalogue.csv";
+      link.click();
+      URL.revokeObjectURL(link.href);
+      haptic("success");
     } catch (error) {
       haptic("error");
       setMessage(copy.errors[error instanceof ApiError ? error.code : "UNKNOWN"] ?? copy.errors.UNKNOWN!);
@@ -141,6 +159,11 @@ export function Catalogue({ token, workspaceId, onBack }: Props) {
       </section>
 
       {data && data.products.length === 0 && <p className="text-center text-[14px] text-text-muted">{copy.catalogue.empty}</p>}
+      {data && data.products.length > 0 && (
+        <GhostButton disabled={state !== "idle"} onClick={() => void download()}>
+          {state === "exporting" ? copy.catalogue.exporting : copy.catalogue.export}
+        </GhostButton>
+      )}
       {data && data.products.length > 0 && (
         <ul className="overflow-hidden rounded-[var(--radius-card)] bg-surface shadow-[var(--shadow-key)]">
           {data.products.map((product, index) => (

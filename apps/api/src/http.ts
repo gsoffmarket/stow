@@ -388,6 +388,17 @@ export function buildHttp(options: HttpOptions): FastifyInstance {
     return ok(reply, request, { products: await catalogue.products(options.pool, actor.workspaceId) });
   });
 
+  app.get<{ Params: { wid: string } }>("/v1/workspaces/:wid/catalogue.csv", async (request, reply) => {
+    const actor = await coordinator(request, reply, options.pool);
+    if (!actor) return reply;
+    if (!allow(request, reply, `import:${actor.memberId}`, limits.imports)) return reply;
+    return reply
+      .header("content-type", "text/csv; charset=utf-8")
+      .header("content-disposition", 'attachment; filename="stow-catalogue.csv"')
+      .header("cache-control", "no-store")
+      .send(await catalogue.catalogueCsv(options.pool, actor.workspaceId));
+  });
+
   app.post<{ Params: { wid: string } }>("/v1/workspaces/:wid/catalogue/preview", { bodyLimit: importLimit_bytes }, async (request, reply) => {
     const actor = await coordinator(request, reply, options.pool);
     if (!actor) return reply;
