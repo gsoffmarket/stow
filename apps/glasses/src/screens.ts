@@ -74,7 +74,7 @@ export type ReportType = "SHORTAGE" | "DAMAGED" | "LOCATION_MISMATCH" | "RETURN_
 
 /** Action is what a tap does on the current screen. */
 export type Action =
-  | { readonly type: "CLAIM" | "COMPLETE" | "REFRESH" | "ACK_REVISION" | "PAUSE" | "RESUME" | "CLOSE_CANCELLED" | "DISMISS" | "BACK" | "REPLIES" }
+  | { readonly type: "CLAIM" | "COMPLETE" | "REFRESH" | "ACK_REVISION" | "PAUSE" | "RESUME" | "CLOSE_CANCELLED" | "DISMISS" | "BACK" | "REPLIES" | "CHOOSE_QUANTITY" }
   | { readonly type: "MARK_READ"; readonly noteId: string }
   | { readonly type: "REPLY"; readonly replyId: string; readonly noteId: string | null }
   | { readonly type: "CONFIRM"; readonly quantity: number }
@@ -102,6 +102,7 @@ function screen(header: string, body: string, footer: string, primary: Action | 
 const messageGroup: Option = { label: "MESSAGE GROUP", action: { type: "REPLIES" } };
 
 const pickOptions: readonly Option[] = [
+  { label: "PICK FEWER", action: { type: "CHOOSE_QUANTITY" } },
   { label: "REPORT SHORTAGE", action: { type: "REPORT", report: "SHORTAGE" } },
   { label: "DAMAGED ITEM", action: { type: "REPORT", report: "DAMAGED" } },
   { label: "WRONG LOCATION", action: { type: "REPORT", report: "LOCATION_MISMATCH" } },
@@ -110,6 +111,7 @@ const pickOptions: readonly Option[] = [
 ];
 
 const returnOptions: readonly Option[] = [
+  { label: "RETURN FEWER", action: { type: "CHOOSE_QUANTITY" } },
   { label: "CANNOT RETURN", action: { type: "REPORT", report: "RETURN_BLOCKED" } },
   messageGroup,
   { label: "PAUSE ORDER", action: { type: "PAUSE" } },
@@ -173,7 +175,7 @@ export function screenFor(snapshot: Snapshot | null, link: Link, dismissedRef: s
           `${why}RETURN × ${task.quantity}\n${task.name.toUpperCase()}\n${where} · ${task.sku}`,
           "TAP TO CONFIRM ACTUAL RETURN",
           { type: "CONFIRM", quantity: task.quantity },
-          returnOptions,
+          task.quantity > 1 ? returnOptions : returnOptions.slice(1),
         );
       }
       return screen(
@@ -181,7 +183,7 @@ export function screenFor(snapshot: Snapshot | null, link: Link, dismissedRef: s
         `${where}\n${task.name.toUpperCase()}\n${task.sku}\n\nPICK × ${task.quantity}`,
         "TAP TO CONFIRM · SWIPE FOR MORE",
         { type: "CONFIRM", quantity: task.quantity },
-        pickOptions,
+        task.quantity > 1 ? pickOptions : pickOptions.slice(1),
       );
     }
     case "REVISION_ACK": {
@@ -230,4 +232,30 @@ export function pairingScreen(code: string | null, link: Link): Screen {
   if (link === "offline") return screen("STOW   PAIR", "NOT CONNECTED\nCannot reach Stow.", "TAP TO RETRY", refresh);
   if (!code) return screen("STOW   PAIR", "GETTING A CODE…", "", null);
   return screen("STOW   PAIR", `CODE  ${code}\n\nOpen Stow in Telegram\nand enter this code.`, "TAP FOR A NEW CODE", refresh);
+}
+
+/**
+ * quantityScreen confirms fewer units than the task asks for, when that is
+ * all the picker actually moved. Swipes change the number; 0 means cancel,
+ * because confirming nothing is never a real confirmation. The rest stays
+ * outstanding as a new task.
+ */
+export function quantityScreen(snapshot: Snapshot, chosen: number): Screen | null {
+  const plan = snapshot.plan;
+  if (plan.kind !== "TASK") return null;
+  const { task } = plan;
+  const verb = task.kind === "PICK" ? "PICK" : "RETURN";
+  const header = `${task.orderRef}   ${task.toteId ? `TOTE ${task.toteId}` : ""}   HOW MANY?`;
+  if (chosen <= 0) return screen(header, `CANCEL\n${verb} × ${task.quantity} stays as asked.`, "SWIPE TO CHANGE · TAP TO GO BACK", { type: "BACK" });
+  return screen(
+    header,
+    `${verb} × ${chosen}\nof ${task.quantity} asked\n${task.name.toUpperCase()}\n${task.sku}`,
+    "SWIPE TO CHANGE · TAP TO CONFIRM",
+    { type: "CONFIRM", quantity: chosen },
+  );
+}
+
+/** clampQuantity keeps a chosen quantity between cancel (0) and what the task asks. */
+export function clampQuantity(chosen: number, asked: number): number {
+  return Math.min(Math.max(chosen, 0), asked);
 }

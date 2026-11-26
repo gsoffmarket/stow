@@ -15,7 +15,19 @@ import {
   waitForEvenAppBridge,
   type EvenAppBridge,
 } from "@evenrealities/even_hub_sdk";
-import { moreScreen, pairingScreen, replyOptions, screenFor, type Action, type Link, type Option, type Screen, type Snapshot } from "./screens.ts";
+import {
+  clampQuantity,
+  moreScreen,
+  pairingScreen,
+  quantityScreen,
+  replyOptions,
+  screenFor,
+  type Action,
+  type Link,
+  type Option,
+  type Screen,
+  type Snapshot,
+} from "./screens.ts";
 
 const apiUrl = import.meta.env.VITE_STOW_API_URL as string;
 
@@ -63,6 +75,8 @@ let dismissedRef: string | null = null;
 let moreCursor: number | null = null;
 // What the More screen lists when it is not the screen's own options (the quick replies).
 let moreList: readonly Option[] | null = null;
+// The quantity being chosen on the "how many?" screen, or null when it is closed.
+let chosenQuantity: number | null = null;
 let base: Screen | null = null;
 let bridgeQueue: Promise<unknown> = Promise.resolve();
 
@@ -83,10 +97,12 @@ async function render(): Promise<void> {
   if (base && (underlying.header !== base.header || underlying.body !== base.body)) {
     moreCursor = null;
     moreList = null;
+    chosenQuantity = null;
   }
   base = underlying;
   const choices = moreList ?? underlying.options;
-  const next = moreCursor !== null && choices.length > 0 ? moreScreen(choices, snapshot?.order?.ref ?? "STOW", moreCursor) : underlying;
+  const choosing = chosenQuantity !== null && snapshot ? quantityScreen(snapshot, chosenQuantity) : null;
+  const next = choosing ?? (moreCursor !== null && choices.length > 0 ? moreScreen(choices, snapshot?.order?.ref ?? "STOW", moreCursor) : underlying);
   const texts = { header: next.header, body: next.body, footer: next.footer };
   if (!shown) {
     const textObject = regions.map(
@@ -255,6 +271,7 @@ function commandFor(action: Action): object | null {
     case "REPLIES":
     case "MARK_READ":
     case "REPLY":
+    case "CHOOSE_QUANTITY":
       return null;
   }
 }
@@ -268,6 +285,13 @@ async function perform(action: Action | null | undefined): Promise<void> {
   if (action.type === "BACK") {
     moreCursor = null;
     moreList = null;
+    chosenQuantity = null;
+    return render();
+  }
+  if (action.type === "CHOOSE_QUANTITY") {
+    const plan = snapshot?.plan;
+    moreCursor = null;
+    chosenQuantity = plan?.kind === "TASK" ? plan.task.quantity - 1 : null;
     return render();
   }
   if (action.type === "REPLIES") {
@@ -277,6 +301,7 @@ async function perform(action: Action | null | undefined): Promise<void> {
   }
   moreCursor = null;
   moreList = null;
+  chosenQuantity = null;
   if (action.type === "DISMISS") {
     dismissedRef = snapshot?.lastCompleted?.ref ?? null;
     return render();
@@ -302,6 +327,13 @@ function listen(): void {
     // Swipes on a text container arrive as textEvent: 1 is up, 2 is down.
     const scroll = event.textEvent?.eventType;
     if (scroll === OsEventTypeList.SCROLL_TOP_EVENT || scroll === OsEventTypeList.SCROLL_BOTTOM_EVENT) {
+      const plan = snapshot?.plan;
+      if (chosenQuantity !== null && plan?.kind === "TASK") {
+        // Swipe up adds one, swipe down takes one away; zero is cancel.
+        chosenQuantity = clampQuantity(chosenQuantity + (scroll === OsEventTypeList.SCROLL_TOP_EVENT ? 1 : -1), plan.task.quantity);
+        void render();
+        return;
+      }
       if (!base || (moreList ?? base.options).length === 0 || link !== "online") return;
       const step = scroll === OsEventTypeList.SCROLL_BOTTOM_EVENT ? 1 : -1;
       moreCursor = moreCursor === null ? 0 : moreCursor + step;
