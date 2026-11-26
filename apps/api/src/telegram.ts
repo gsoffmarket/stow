@@ -237,8 +237,13 @@ async function settle(pool: pg.Pool, id: string, status: "SENT" | "FAILED" | "UN
 }
 
 async function statusOf(pool: pg.Pool, workspaceId: string, orderId: string, connectionId: string) {
-  const order = await pool.query<{ ref: string; revision: number; version: string; terminal: "COMPLETED" | "CANCELLED" | null; source_message_id: string | null; picker: string | null; tote_id: string | null }>(
-    `select o.ref, o.revision, o.version, o.terminal, o.source_message_id, m.display_name as picker, a.tote_id
+  const order = await pool.query<{
+    ref: string; revision: number; version: string; terminal: "COMPLETED" | "CANCELLED" | null; source_message_id: string | null;
+    picker: string | null; tote_id: string | null; ack_revision: number | null; is_paused: boolean; is_cancel_requested: boolean; is_blocked: boolean;
+  }>(
+    `select o.ref, o.revision, o.version, o.terminal, o.source_message_id, m.display_name as picker, a.tote_id, a.ack_revision,
+            o.is_paused, o.is_cancel_requested,
+            exists (select 1 from order_exceptions e where e.order_id = o.id and e.status = 'OPEN') as is_blocked
      from orders o
      left join assignments a on a.order_id = o.id and a.released_at is null
      left join members m on m.workspace_id = o.workspace_id and m.id = a.worker_id
@@ -265,9 +270,19 @@ async function statusOf(pool: pg.Pool, workspaceId: string, orderId: string, con
       terminal: row.terminal,
       picker: row.picker,
       toteId: row.tote_id,
+      hold: holdOf(row),
       lines: lines.rows.map((line) => ({ sku: line.sku_snapshot, requested: line.requested_qty, picked: line.picked_qty })),
     },
   };
+}
+
+// The one thing holding an order up, in the order the picker would meet it.
+function holdOf(row: { is_blocked: boolean; is_cancel_requested: boolean; is_paused: boolean; ack_revision: number | null; revision: number }) {
+  if (row.is_blocked) return "BLOCKED" as const;
+  if (row.ack_revision !== null && row.ack_revision !== row.revision) return "AWAITING_PICKER_ACK" as const;
+  if (row.is_cancel_requested) return "CANCELLING" as const;
+  if (row.is_paused) return "PAUSED" as const;
+  return "NONE" as const;
 }
 
 /**
