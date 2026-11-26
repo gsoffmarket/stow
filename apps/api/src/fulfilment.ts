@@ -181,7 +181,12 @@ export async function startBatch(pool: pg.Pool, actor: Actor, commandId: string,
   if (shown.length < batchLimits.min || shown.length > batchLimits.max || !isDistinct) return { status: 400, body: { code: "BATCH_SIZE" } };
   return transaction(pool, (client) =>
     once(client, actor, commandId, hashCommand({ type: "START_BATCH", shown }), async (): Promise<BatchResult> => {
-      const busy = await client.query("select 1 from assignments where workspace_id = $1 and worker_id = $2 and released_at is null limit 1", [actor.workspaceId, actor.memberId]);
+      // Assignments outlive their order, so only an open order counts as carried.
+      const busy = await client.query(
+        `select 1 from assignments a join orders o on o.id = a.order_id
+         where a.workspace_id = $1 and a.worker_id = $2 and a.released_at is null and o.terminal is null limit 1`,
+        [actor.workspaceId, actor.memberId],
+      );
       if (busy.rowCount) return { status: 409, body: { code: "ASSIGNMENT_CONFLICT" } };
       const claims = [];
       for (const [index, order] of shown.entries()) {
