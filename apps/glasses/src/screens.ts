@@ -193,7 +193,7 @@ export function screenFor(snapshot: Snapshot | null, link: Link, local: Local = 
   const done = snapshot.lastCompleted;
   if (done && done.ref !== local.dismissedRef && (plan.kind === "QUEUE_EMPTY" || plan.kind === "OFFER")) {
     const telegram = { SENT: "SENT", PENDING: "PENDING", UNCERTAIN: "NOT CONFIRMED", FAILED: "NOT SENT", NOT_REQUIRED: "NOT USED" }[done.delivery];
-    const what = done.terminal === "COMPLETED" ? `${done.units} units confirmed` : "Cancelled, tote empty";
+    const what = done.terminal === "COMPLETED" ? `${done.units} ${done.units === 1 ? "unit" : "units"} confirmed` : "Cancelled, tote empty";
     if (local.isAutoNext && plan.kind === "OFFER") {
       return screen(`${done.ref}   ${done.terminal}`, `SAVED · ${what}\nTELEGRAM: ${telegram}\n\nNEXT  ${ref}\n${sizeOf(snapshot)}`, "TAP TO START NEXT", { type: "CLAIM" });
     }

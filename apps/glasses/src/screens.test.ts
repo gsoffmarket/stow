@@ -290,6 +290,10 @@ describe("auto-next", () => {
     });
   });
 
+  test("a single confirmed unit is singular", () => {
+    expect(screenFor(snapshot({ kind: "QUEUE_EMPTY" }, { order: null, lastCompleted: { ...closed, units: 1 } }), "online").body).toBe("SAVED\n1 unit confirmed\nTELEGRAM: SENT");
+  });
+
   test("when on with nothing queued, the Saved screen stays as it was", () => {
     expect(screenFor(snapshot({ kind: "QUEUE_EMPTY" }, { order: null, lastCompleted: closed }), "online", on).primary).toEqual({ type: "DISMISS" });
   });

@@ -33,7 +33,7 @@ export function renderStatus(status: OrderStatus): string {
   });
   const footer =
     status.terminal === "COMPLETED"
-      ? `${confirmed} units confirmed by the picker. Not independently verified.`
+      ? `${confirmed} ${confirmed === 1 ? "unit" : "units"} confirmed by the picker. Not independently verified.`
       : status.picker
         ? `Progress: ${confirmed}/${requested} confirmed.`
         : `${status.lines.length} lines / ${requested} units. Awaiting picker.`;
