@@ -97,3 +97,32 @@ describe("worker API", () => {
     expect(other.headers["access-control-allow-origin"]).toBeUndefined();
   });
 });
+
+describe("batch API", () => {
+  test("offers queued orders, starts a batch from the offer and shows the totes", async () => {
+    const { workspaceId, auth } = await workspaceWithDevice();
+    const coordinator = (await db.pool.query<{ id: string }>("select id from members where workspace_id = $1 and role = 'COORDINATOR'", [workspaceId])).rows[0]!.id;
+    await createOrder(db.pool, {
+      workspaceId, createdBy: coordinator, sourceKey: `test:${randomUUID()}`, connectionId: null, sourceMessageId: null,
+      request: { ref: null, lines: [{ sku: "TS-BLK-M", quantity: 1 }] },
+    });
+    const offer = (await snapshot(workspaceId, auth)).json().data.batchOffer as { orderId: string; revision: number; version: string }[];
+    expect(offer).toHaveLength(2);
+
+    const orders = offer.map((order) => ({ orderId: order.orderId, expectedRevision: order.revision, expectedVersion: order.version }));
+    const started = await app.inject({ method: "POST", url: `/v1/workspaces/${workspaceId}/batches`, headers: auth, payload: { commandId: randomUUID(), orders } });
+    expect(started.json()).toMatchObject({ data: { outcome: "APPLIED", orderIds: offer.map((order) => order.orderId) } });
+
+    const view = (await snapshot(workspaceId, auth)).json().data;
+    expect(view.totes.map((tote: { toteId: string }) => tote.toteId)).toEqual(["A", "B"]);
+    expect(view.batchOffer).toEqual([]);
+    expect(view.plan).toMatchObject({ kind: "TASK", task: { toteId: "A" } });
+  });
+
+  test("answers a batch of one with a problem code", async () => {
+    const { workspaceId, orderId, auth } = await workspaceWithDevice();
+    const orders = [{ orderId, expectedRevision: 1, expectedVersion: "1" }];
+    const refused = await app.inject({ method: "POST", url: `/v1/workspaces/${workspaceId}/batches`, headers: auth, payload: { commandId: randomUUID(), orders } });
+    expect({ status: refused.statusCode, code: refused.json().error.code }).toEqual({ status: 400, code: "BATCH_SIZE" });
+  });
+});

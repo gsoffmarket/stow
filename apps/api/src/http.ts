@@ -10,7 +10,7 @@ import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest }
 import type pg from "pg";
 import { z } from "zod";
 import { outstandingPick, outstandingReturn, type Order, type Task } from "@stow/order-engine";
-import { runCommand, workerView, type Command, type Role } from "./fulfilment.ts";
+import { runCommand, startBatch, workerView, type Command, type Role } from "./fulfilment.ts";
 import * as devices from "./devices.ts";
 import { markRead, postNote, quickReplies, sendReply } from "./messages.ts";
 import { listOrders, orderDetail } from "./console.ts";
@@ -291,6 +291,8 @@ export function buildHttp(options: HttpOptions): FastifyInstance {
       cursor: view.cursor,
       order: view.order && orderJson(view.order),
       plan,
+      totes: view.totes,
+      batchOffer: view.batchOffer,
       changes: view.changes,
       decision: view.decision,
       lastCompleted: view.lastCompleted,
@@ -351,6 +353,20 @@ export function buildHttp(options: HttpOptions): FastifyInstance {
     if (result.status !== 200) return fail(reply, request, result.status, result.body.code);
     // Telegram delivery is asynchronous; the physical action is already saved.
     return ok(reply, request, { commandId: body.commandId, ...result.body, delivery: "PENDING" });
+  });
+
+  app.post<{ Params: { wid: string } }>("/v1/workspaces/:wid/batches", async (request, reply) => {
+    const device = await authenticate(request, reply, options.pool);
+    if (!device) return reply;
+    if (!allow(request, reply, `command:${device.memberId}`, limits.commands)) return reply;
+    const parsed = z
+      .strictObject({ commandId: uuid, orders: z.array(z.strictObject({ orderId: uuid, expectedRevision: expected.expectedRevision, expectedVersion: counter })).max(10) })
+      .safeParse(request.body);
+    if (!parsed.success) return fail(reply, request, 400, "INVALID_INPUT");
+    const shown = parsed.data.orders.map((order) => ({ orderId: order.orderId, revision: order.expectedRevision, version: order.expectedVersion }));
+    const result = await startBatch(options.pool, device, parsed.data.commandId, shown);
+    if (result.status !== 200) return fail(reply, request, result.status, result.body.code);
+    return ok(reply, request, { commandId: parsed.data.commandId, ...result.body, delivery: "PENDING" });
   });
 
   return app;
@@ -481,6 +497,7 @@ const messages: Record<string, string> = {
   ASSIGNMENT_CONFLICT: "this order belongs to someone else",
   QUANTITY_OUT_OF_RANGE: "the quantity is outside what this task needs",
   ROLE_REQUIRED: "your role cannot do this",
+  BATCH_SIZE: "a batch holds 2 to 5 different orders",
   PAIRING_EXPIRED: "that code has expired; the glasses will show a new one",
   NOT_APPROVED: "not approved yet",
   NOT_ASSIGNED: "only the picker on this order can reply on it",
