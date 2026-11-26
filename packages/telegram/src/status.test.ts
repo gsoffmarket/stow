@@ -30,6 +30,11 @@ describe("renderStatus", () => {
     expect(text.split("\n").at(-1)).toBe("2 units confirmed by the picker. Not independently verified.");
   });
 
+  test("a single confirmed unit is singular", () => {
+    const text = renderStatus({ ref: "ST-1", revision: 1, terminal: "COMPLETED", picker: "P", toteId: "A", lines: [{ sku: "A", requested: 1, picked: 1 }], hold: "NONE", note: "NONE" });
+    expect(text.split("\n").at(-1)).toBe("1 unit confirmed by the picker. Not independently verified.");
+  });
+
   test("very long orders are cut below Telegram's limit with a marker", () => {
     const many = Array.from({ length: 400 }, (_, i) => ({ sku: `SKU-${String(i).padStart(4, "0")}-LONG-NAME`, requested: 1, picked: 0 }));
     const text = renderStatus({ ref: "ST-1", revision: 1, terminal: null, picker: null, toteId: null, lines: many, hold: "NONE", note: "NONE" });
