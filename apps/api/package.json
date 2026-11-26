@@ -3,12 +3,16 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "migrate": "node src/db/migrate.ts"
+    "start": "node src/main.ts",
+    "dev": "node --watch --env-file-if-exists=../../.env.local src/main.ts",
+    "migrate": "node --env-file-if-exists=../../.env.local src/db/migrate.ts"
   },
   "dependencies": {
-    "pg": "8.23.1",
     "@stow/order-engine": "workspace:*",
-    "@stow/telegram": "workspace:*"
+    "@stow/telegram": "workspace:*",
+    "fastify": "5.12.8",
+    "pg": "8.23.1",
+    "zod": "4.6.7"
   },
   "devDependencies": {
     "@types/pg": "8.23.1"
