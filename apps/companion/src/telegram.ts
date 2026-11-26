@@ -8,6 +8,7 @@ type WebApp = {
   expand(): void;
   setHeaderColor(color: string): void;
   setBackgroundColor(color: string): void;
+  openTelegramLink?(url: string): void;
   BackButton?: { show(): void; hide(): void; onClick(handler: () => void): void; offClick(handler: () => void): void };
   HapticFeedback?: {
     impactOccurred(style: "light" | "medium" | "heavy"): void;
@@ -70,4 +71,21 @@ export function haptic(kind: "tap" | "success" | "error"): void {
   if (!feedback) return;
   if (kind === "tap") feedback.impactOccurred("light");
   else feedback.notificationOccurred(kind);
+}
+
+/** botLink is the chat with Stow's bot, or null when the build does not know the bot. */
+export const botLink = (() => {
+  const username = (import.meta.env.VITE_STOW_BOT_USERNAME as string | undefined) || null;
+  return username ? `https://t.me/${username}` : null;
+})();
+
+/**
+ * openBot opens the bot's chat. Inside Telegram it switches chats without
+ * closing the Mini App; a plain link would leave Telegram for the browser.
+ */
+export function openBot(): void {
+  if (!botLink) return;
+  const webApp = app();
+  if (webApp?.openTelegramLink) webApp.openTelegramLink(botLink);
+  else window.open(botLink, "_blank", "noopener");
 }

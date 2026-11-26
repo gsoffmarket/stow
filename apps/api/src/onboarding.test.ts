@@ -5,6 +5,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest"
 import type { BotApi, Message, Result, Update } from "@stow/telegram/botapi";
 import { createTestDatabase, type TestDatabase } from "./db/testdb.ts";
 import { disconnectGroup, listGroups } from "./connections.ts";
+import { setup } from "./console.ts";
 import { processInbox, receive, type Telegram } from "./telegram.ts";
 
 let replies: string[];
@@ -110,5 +111,24 @@ describe("the Telegram page", () => {
     await send(say(5400, "Ife", "/order\nX x 1", group));
     expect(replies).toEqual([]);
     expect(await send(say(5400, "Ife", "/stow_connect", group))).toBe("Connected to Ikeja stockroom. Orders sent here with /order now go to Stow.");
+  });
+});
+
+describe("the onboarding checklist", () => {
+  test("ticks each step as the team does it, wherever they do it", async () => {
+    await send(say(5500, "Bisi", "/setup Yaba stockroom"));
+    const workspaceId = (await db.pool.query<{ id: string }>("select id from workspaces where name = 'Yaba stockroom'")).rows[0]!.id;
+    const steps = async () => Object.entries(await setup(db.pool, workspaceId)).filter(([, isDone]) => isDone).map(([step]) => step);
+    expect(await steps()).toEqual([]);
+
+    await db.pool.query("insert into products (workspace_id, sku, normalized_sku, name) values ($1, 'MUG-1', 'MUG-1', 'Mug')", [workspaceId]);
+    await send(say(5500, "Bisi", "/stow_connect", { id: -100666, type: "group", title: "Yaba" }));
+    const link = (await send(say(5500, "Bisi", "/invite picker"))).match(/start=(inv_[A-Za-z0-9_-]{32})/)![1];
+    await send(say(6500, "Kemi", `/start ${link}`));
+    expect(await steps()).toEqual(["hasCatalogue", "hasGroup", "hasPicker"]);
+
+    const picker = (await db.pool.query<{ id: string }>("select id from members where telegram_user_id = '6500'")).rows[0]!.id;
+    await db.pool.query("insert into device_tokens (workspace_id, member_id, label, token_hash, expires_at) values ($1, $2, 'G2', repeat('a', 64), now() + interval '1 hour')", [workspaceId, picker]);
+    expect(await steps()).toEqual(["hasCatalogue", "hasGroup", "hasPicker", "hasGlasses"]);
   });
 });

@@ -175,6 +175,13 @@ export function changeMember(token: string, workspaceId: string, memberId: strin
   return call(change.kind === "revoke" ? `${base}/devices/revoke` : `${base}/remove`, { method: "POST", token, body: {} });
 }
 
+/** Setup is which onboarding steps the workspace has done, read from its data. */
+export type Setup = { hasCatalogue: boolean; hasGroup: boolean; hasPicker: boolean; hasGlasses: boolean; hasCompletedOrder: boolean };
+
+export function getSetup(token: string, workspaceId: string): Promise<Setup> {
+  return call(`/v1/workspaces/${workspaceId}/setup`, { method: "GET", token });
+}
+
 /** TelegramGroup is a group that drives the workspace; title is null for groups connected before names were kept. */
 export type TelegramGroup = { id: string; title: string | null; connectedAt: string; connectedBy: string; openOrders: number };
 

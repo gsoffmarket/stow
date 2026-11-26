@@ -13,7 +13,7 @@ import { limits as orderLimits, outstandingPick, outstandingReturn, type Order, 
 import { createOrderOnce, runCommand, startBatch, workerView, type Command, type Role } from "./fulfilment.ts";
 import * as devices from "./devices.ts";
 import { markRead, postNote, quickReplies, sendReply } from "./messages.ts";
-import { listOrders, orderDetail, pickers, sessions, type Cursor } from "./console.ts";
+import { listOrders, orderDetail, pickers, sessions, setup, type Cursor } from "./console.ts";
 import * as catalogue from "./catalogue.ts";
 import * as connections from "./connections.ts";
 import * as members from "./members.ts";
@@ -282,6 +282,13 @@ export function buildHttp(options: HttpOptions): FastifyInstance {
     const actor = await coordinator(request, reply, options.pool);
     if (!actor) return reply;
     return ok(reply, request, { sessions: await sessions(options.pool, actor.workspaceId) });
+  });
+
+  // The onboarding checklist, read from the data so it resumes anywhere.
+  app.get<{ Params: { wid: string } }>("/v1/workspaces/:wid/setup", async (request, reply) => {
+    const actor = await coordinator(request, reply, options.pool);
+    if (!actor) return reply;
+    return ok(reply, request, await setup(options.pool, actor.workspaceId));
   });
 
   // The Telegram page: which groups drive the workspace, and whether sending works.
