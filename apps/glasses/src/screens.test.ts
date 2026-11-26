@@ -3,7 +3,7 @@ import { clampQuantity, moreScreen, pairingScreen, quantityScreen, screenFor, ty
 
 const order = { id: "o1", ref: "ST-1042", revision: 2, version: "7", isCancelRequested: false, toteId: "A", lines: [{ requested: 3 }, { requested: 2 }, { requested: 1 }] };
 const quickReplies = [{ id: "ON_IT", text: "On it" }, { id: "FOUND", text: "Found them" }];
-const empty = { changes: [], decision: null, lastCompleted: null, note: null, quickReplies };
+const empty = { totes: [], batchOffer: [], changes: [], decision: null, lastCompleted: null, note: null, quickReplies };
 
 function snapshot(plan: Snapshot["plan"], extra: Partial<Snapshot> = {}): Snapshot {
   return { workspaceId: "w", cursor: "9", order, plan, ...empty, ...extra };
@@ -203,5 +203,39 @@ describe("next order", () => {
       body: "ST-1042\n3 LINES · 6 UNITS\nReady to pick.",
       primary: { type: "CLAIM" },
     });
+  });
+});
+
+describe("batches", () => {
+  const offer = (count: number) => Array.from({ length: count }, (_, i) => ({ orderId: `o${i}`, ref: `ST-${1042 + i}`, revision: 1, version: "1" }));
+  const carrying = [
+    { orderId: "o1", ref: "ST-1042", toteId: "A", picked: 0, requested: 6 },
+    { orderId: "o2", ref: "ST-1043", toteId: "B", picked: 2, requested: 4 },
+  ];
+
+  test("an offer with others queued lets the picker swipe for a batch of each size", () => {
+    const screen = screenFor(snapshot({ kind: "OFFER" }, { batchOffer: offer(4) }), "online");
+    expect(screen.footer).toBe("TAP TO START · SWIPE FOR BATCH");
+    expect(screen.options).toEqual([
+      { label: "BATCH OF 2", action: { type: "START_BATCH", size: 2 } },
+      { label: "BATCH OF 3", action: { type: "START_BATCH", size: 3 } },
+      { label: "BATCH OF 4", action: { type: "START_BATCH", size: 4 } },
+    ]);
+  });
+
+  test("an offer alone has nothing to swipe for", () => {
+    expect(screenFor(snapshot({ kind: "OFFER" }), "online")).toMatchObject({ footer: "TAP TO START", options: [] });
+  });
+
+  test("a pick in a batch names the tote it goes into", () => {
+    expect(screenFor(snapshot(task("PICK"), { totes: carrying }), "online").body).toBe("BIN A-03\nBLACK T-SHIRT\nTS-BLK-M\n\nPICK × 3 → TOTE A");
+  });
+
+  test("a return in a batch names the tote it comes out of", () => {
+    expect(screenFor(snapshot(task("RETURN"), { totes: carrying }), "online").body).toBe("RETURN × 3 FROM TOTE A\nBLACK T-SHIRT\nBIN A-03 · TS-BLK-M");
+  });
+
+  test("a review in a batch says which tote to check", () => {
+    expect(screenFor(snapshot({ kind: "REVIEW_COMPLETE" }, { totes: carrying }), "online").body).toBe("ALL ITEMS IN TOTE A\nCheck the tote, then complete.");
   });
 });
