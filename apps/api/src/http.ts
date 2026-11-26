@@ -16,6 +16,7 @@ import { markRead, postNote, quickReplies, sendReply } from "./messages.ts";
 import { listOrders, orderDetail, pickers } from "./console.ts";
 import * as catalogue from "./catalogue.ts";
 import * as members from "./members.ts";
+import * as reports from "./reports.ts";
 import { Limiter, limits, type Limit } from "./limits.ts";
 import { memberships, sessionUser, startSession, verifyLaunchData } from "./identity.ts";
 import type { Actor } from "./fulfilment.ts";
@@ -241,6 +242,33 @@ export function buildHttp(options: HttpOptions): FastifyInstance {
     const result = await createOrderOnce(options.pool, actor, parsed.data.commandId, { ref: parsed.data.ref, lines: parsed.data.lines });
     if (result.status !== 200) return fail(reply, request, result.status, result.body.code);
     return ok(reply, request, result.body);
+  });
+
+  // Reports and the order history export, over whole days in the viewer's time zone.
+  type RangeQuery = { Params: { wid: string }; Querystring: { from?: string; to?: string; tz?: string } };
+  const reportRange = (request: FastifyRequest<RangeQuery>) => reports.parseRange(request.query.from ?? "", request.query.to ?? "", request.query.tz ?? "");
+
+  app.get<RangeQuery>("/v1/workspaces/:wid/reports", async (request, reply) => {
+    const actor = await coordinator(request, reply, options.pool);
+    if (!actor) return reply;
+    if (!allow(request, reply, `read:${actor.memberId}`, limits.reads)) return reply;
+    const range = reportRange(request);
+    if (!range) return fail(reply, request, 400, "INVALID_RANGE");
+    return ok(reply, request, await reports.report(options.pool, actor.workspaceId, range));
+  });
+
+  app.get<RangeQuery>("/v1/workspaces/:wid/reports/orders.csv", async (request, reply) => {
+    const actor = await coordinator(request, reply, options.pool);
+    if (!actor) return reply;
+    if (!allow(request, reply, `import:${actor.memberId}`, limits.imports)) return reply;
+    const range = reportRange(request);
+    if (!range) return fail(reply, request, 400, "INVALID_RANGE");
+    const csv = await reports.ordersCsv(options.pool, actor.workspaceId, range);
+    return reply
+      .header("content-type", "text/csv; charset=utf-8")
+      .header("content-disposition", `attachment; filename="stow-orders-${range.from}-to-${range.to}.csv"`)
+      .header("cache-control", "no-store")
+      .send(csv);
   });
 
   // The Workers page: everyone can see the team; only owners change it.
@@ -567,6 +595,7 @@ const messages: Record<string, string> = {
   QUANTITY_OUT_OF_RANGE: "the quantity is outside what this task needs",
   ROLE_REQUIRED: "your role cannot do this",
   REF_TAKEN: "another order already uses that reference",
+  INVALID_RANGE: "choose dates as YYYY-MM-DD, from no later than to, at most 366 days, with a valid time zone",
   LAST_OWNER: "a workspace needs at least one owner; make someone else owner first",
   HOLDS_ORDERS: "this person still holds open orders; release or reassign them first",
   NOT_A_PICKER: "orders can only be assigned to pickers in this workspace",
