@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { clampQuantity, moreScreen, pairingScreen, quantityScreen, screenFor, type Snapshot } from "./screens.ts";
+import { batchScreen, clampQuantity, moreScreen, pairingScreen, quantityScreen, screenFor, type Snapshot } from "./screens.ts";
 
 const order = { id: "o1", ref: "ST-1042", revision: 2, version: "7", isCancelRequested: false, isReleaseRequested: false, toteId: "A", lines: [{ requested: 3 }, { requested: 2 }, { requested: 1 }] };
 const quickReplies = [{ id: "ON_IT", text: "On it" }, { id: "FOUND", text: "Found them" }];
@@ -221,10 +221,20 @@ describe("batches", () => {
     const screen = screenFor(snapshot({ kind: "OFFER" }, { batchOffer: offer(4) }), "online");
     expect(screen.footer).toBe("TAP TO START · SWIPE FOR BATCH");
     expect(screen.options).toEqual([
-      { label: "BATCH OF 2", action: { type: "START_BATCH", size: 2 } },
-      { label: "BATCH OF 3", action: { type: "START_BATCH", size: 3 } },
-      { label: "BATCH OF 4", action: { type: "START_BATCH", size: 4 } },
+      { label: "BATCH OF 2", action: { type: "REVIEW_BATCH", size: 2 } },
+      { label: "BATCH OF 3", action: { type: "REVIEW_BATCH", size: 3 } },
+      { label: "BATCH OF 4", action: { type: "REVIEW_BATCH", size: 4 } },
     ]);
+  });
+
+  test("choosing a size shows which order goes in which tote before anything starts", () => {
+    expect(batchScreen(snapshot({ kind: "OFFER" }, { batchOffer: offer(3) }), 2)).toEqual({
+      header: "BATCH OF 2   TOTES",
+      body: "TOTE A  ST-1042\nTOTE B  ST-1043\nLabel each tote, then start.",
+      footer: "TAP TO START · SWIPE TO GO BACK",
+      primary: { type: "START_BATCH", size: 2 },
+      options: [],
+    });
   });
 
   test("an offer alone has nothing to swipe for", () => {

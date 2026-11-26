@@ -16,6 +16,7 @@ import {
   type EvenAppBridge,
 } from "@evenrealities/even_hub_sdk";
 import {
+  batchScreen,
   clampQuantity,
   moreScreen,
   pairingScreen,
@@ -77,6 +78,8 @@ let moreCursor: number | null = null;
 let moreList: readonly Option[] | null = null;
 // The quantity being chosen on the "how many?" screen, or null when it is closed.
 let chosenQuantity: number | null = null;
+// The batch size whose tote mapping is on screen, or null when it is closed.
+let batchSize: number | null = null;
 let base: Screen | null = null;
 let bridgeQueue: Promise<unknown> = Promise.resolve();
 
@@ -98,10 +101,14 @@ async function render(): Promise<void> {
     moreCursor = null;
     moreList = null;
     chosenQuantity = null;
+    batchSize = null;
   }
   base = underlying;
   const choices = moreList ?? underlying.options;
-  const choosing = chosenQuantity !== null && snapshot ? quantityScreen(snapshot, chosenQuantity) : null;
+  const choosing =
+    chosenQuantity !== null && snapshot ? quantityScreen(snapshot, chosenQuantity)
+    : batchSize !== null && snapshot ? batchScreen(snapshot, batchSize)
+    : null;
   const next = choosing ?? (moreCursor !== null && choices.length > 0 ? moreScreen(choices, snapshot?.order?.ref ?? "STOW", moreCursor) : underlying);
   const texts = { header: next.header, body: next.body, footer: next.footer };
   if (!shown) {
@@ -271,6 +278,7 @@ function commandFor(action: Action): object | null {
         ...expected,
         payload: { taskToken: plan.taskToken, kind: plan.task.kind, lineId: plan.task.lineId, quantity: action.quantity },
       };
+    case "REVIEW_BATCH":
     case "START_BATCH":
     case "REFRESH":
     case "DISMISS":
@@ -324,6 +332,12 @@ async function perform(action: Action | null | undefined): Promise<void> {
     if (action.noteId && link === "online") await send({ path: `/messages/${action.noteId}/read`, body: {} });
     return;
   }
+  if (action.type === "REVIEW_BATCH") {
+    moreCursor = null;
+    batchSize = action.size;
+    return render();
+  }
+  batchSize = null;
   if (action.type === "START_BATCH") {
     const orders = (snapshot?.batchOffer ?? []).slice(0, action.size).map((order) => ({ orderId: order.orderId, expectedRevision: order.revision, expectedVersion: order.version }));
     return send({ path: "/batches", body: { commandId: crypto.randomUUID(), orders } });
@@ -342,6 +356,11 @@ function listen(): void {
       if (chosenQuantity !== null && plan?.kind === "TASK") {
         // Swipe up adds one, swipe down takes one away; zero is cancel.
         chosenQuantity = clampQuantity(chosenQuantity + (scroll === OsEventTypeList.SCROLL_TOP_EVENT ? 1 : -1), plan.task.quantity);
+        void render();
+        return;
+      }
+      if (batchSize !== null) {
+        batchSize = null;
         void render();
         return;
       }
