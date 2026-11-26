@@ -106,6 +106,11 @@ export function runCommand(token: string, workspaceId: string, detail: OrderDeta
   });
 }
 
+/** createOrder queues an order typed in the Mini App; commandId makes a retried submit safe. */
+export function createOrder(token: string, workspaceId: string, commandId: string, ref: string | null, lines: { sku: string; quantity: number }[]): Promise<{ orderId: string; ref: string }> {
+  return call(`/v1/workspaces/${workspaceId}/orders`, { method: "POST", token, body: { commandId, ref, lines } });
+}
+
 export type Picker = { id: string; name: string; openOrders: number };
 
 export function listPickers(token: string, workspaceId: string): Promise<{ pickers: Picker[] }> {
