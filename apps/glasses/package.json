@@ -1,0 +1,19 @@
+{
+  "name": "@stow/glasses",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host",
+    "build": "vite build",
+    "simulator": "evenhub-simulator http://localhost:5173 --automation-port 9898",
+    "package": "vite build && evenhub pack app.json dist -o stow.ehpk"
+  },
+  "dependencies": {
+    "@evenrealities/even_hub_sdk": "0.0.16"
+  },
+  "devDependencies": {
+    "@evenrealities/evenhub-cli": "0.2.0",
+    "@evenrealities/evenhub-simulator": "0.9.5",
+    "vite": "8.4.0"
+  }
+}
