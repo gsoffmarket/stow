@@ -20,7 +20,7 @@ import { createOrder, loadOrder, runCommand, transaction, type Command, type Com
 export type Telegram = { readonly pool: pg.Pool; readonly api: BotApi; readonly botAlias: string; readonly botUsername: string };
 
 /** StoredMessage is the minimum kept from a command message; other updates keep nothing. */
-type StoredMessage = { kind?: "message"; chatId: string; chatType: string; fromId: string; fromName: string; messageId: number; text: string };
+type StoredMessage = { kind?: "message"; chatId: string; chatType: string; chatTitle?: string; fromId: string; fromName: string; messageId: number; text: string };
 
 /** StoredNote is a coordinator's reply to one of Stow's status messages. */
 type StoredNote = { kind: "note"; chatId: string; fromId: string; replyTo: number; text: string };
@@ -52,6 +52,7 @@ function commandMessage(message: Message | undefined): StoredMessage | null {
   return {
     chatId: String(message.chat.id),
     chatType: message.chat.type,
+    ...(message.chat.title ? { chatTitle: message.chat.title.slice(0, 128) } : {}),
     fromId: String(message.from.id),
     fromName: message.from.first_name.slice(0, 80) || "Member",
     messageId: message.message_id,
@@ -213,9 +214,10 @@ async function connect(pool: pg.Pool, message: StoredMessage): Promise<string> {
   if (!workspace) return "Only a workspace owner can connect a group. Send /setup to me in a private chat first.";
   const bound = await pool.query("select 1 from telegram_connections where chat_id = $1 and status = 'ACTIVE'", [message.chatId]);
   if (bound.rowCount) return "This group is already connected to Stow.";
-  await pool.query("insert into telegram_connections (workspace_id, chat_id, status, bound_by) values ($1, $2, 'ACTIVE', $3)", [
+  await pool.query("insert into telegram_connections (workspace_id, chat_id, chat_title, status, bound_by) values ($1, $2, $3, 'ACTIVE', $4)", [
     workspace.workspace_id,
     message.chatId,
+    message.chatTitle ?? null,
     workspace.id,
   ]);
   return `Connected to ${workspace.name}. Orders sent here with /order now go to Stow.`;
@@ -290,8 +292,8 @@ async function bind(pool: pg.Pool, message: StoredMessage, code: string): Promis
       message.fromId,
     ]);
     await client.query(
-      "insert into telegram_connections (workspace_id, chat_id, status, bound_by) values ($1, $2, 'ACTIVE', $3)",
-      [challenge.workspace_id, message.chatId, challenge.member_id],
+      "insert into telegram_connections (workspace_id, chat_id, chat_title, status, bound_by) values ($1, $2, $3, 'ACTIVE', $4)",
+      [challenge.workspace_id, message.chatId, message.chatTitle ?? null, challenge.member_id],
     );
     return "Connected. Orders sent here with /order now go to Stow.";
   });
