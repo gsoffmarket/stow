@@ -245,3 +245,30 @@ export async function sessions(pool: pg.Pool, workspaceId: string): Promise<Glas
     orders: row.orders.map((order) => ({ ref: order.ref, toteId: order.tote_id })),
   }));
 }
+
+/** Setup is how far a workspace has got toward its first picked order, for the onboarding checklist. */
+export type Setup = {
+  readonly hasCatalogue: boolean;
+  readonly hasGroup: boolean;
+  readonly hasPicker: boolean;
+  readonly hasGlasses: boolean;
+  readonly hasCompletedOrder: boolean;
+};
+
+/**
+ * setup reads each step from the data itself rather than a stored progress
+ * flag, so the checklist resumes wherever the team left off, however they
+ * did the step (bot command, Mini App or import).
+ */
+export async function setup(pool: pg.Pool, workspaceId: string): Promise<Setup> {
+  const { rows } = await pool.query<{ catalogue: boolean; grp: boolean; picker: boolean; glasses: boolean; completed: boolean }>(
+    `select exists (select 1 from products where workspace_id = $1) as catalogue,
+            exists (select 1 from telegram_connections where workspace_id = $1 and status = 'ACTIVE') as grp,
+            exists (select 1 from members where workspace_id = $1 and role = 'PICKER' and removed_at is null) as picker,
+            exists (select 1 from device_tokens where workspace_id = $1 and revoked_at is null and expires_at > now()) as glasses,
+            exists (select 1 from orders where workspace_id = $1 and terminal = 'COMPLETED') as completed`,
+    [workspaceId],
+  );
+  const row = rows[0]!;
+  return { hasCatalogue: row.catalogue, hasGroup: row.grp, hasPicker: row.picker, hasGlasses: row.glasses, hasCompletedOrder: row.completed };
+}
