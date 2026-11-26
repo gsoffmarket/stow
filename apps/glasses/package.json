@@ -6,7 +6,7 @@
     "dev": "vite --host",
     "build": "vite build",
     "simulator": "evenhub-simulator http://localhost:5173 --automation-port 9898",
-    "package": "vite build && evenhub pack app.json dist -o stow.ehpk"
+    "package": "node pack.ts"
   },
   "dependencies": {
     "@evenrealities/even_hub_sdk": "0.0.16"
