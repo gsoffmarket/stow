@@ -9,12 +9,12 @@ import { copy } from "./copy.ts";
 import { NewOrder } from "./NewOrder.tsx";
 import { usePolling } from "./polling.ts";
 
-type Props = { token: string; workspaceId: string; onOpen: (orderId: string) => void; onCatalogue: () => void };
+type Props = { token: string; workspaceId: string; onOpen: (orderId: string) => void };
 
 const views: View[] = ["needs_you", "active", "done"];
 const settle = { type: "spring", visualDuration: 0.35, bounce: 0.15 } as const;
 
-export function Orders({ token, workspaceId, onOpen, onCatalogue }: Props) {
+export function Orders({ token, workspaceId, onOpen }: Props) {
   const [view, setView] = useState<View>("active");
   const { data, isLive } = usePolling(() => listOrders(token, workspaceId, view), [view], 3000);
   const [needsYou, setNeedsYou] = useState(0);
@@ -30,9 +30,6 @@ export function Orders({ token, workspaceId, onOpen, onCatalogue }: Props) {
       <div className="flex items-center gap-3">
         <h1 className="text-2xl font-medium">{copy.orders.title}</h1>
         <span className="mr-auto"><LiveDot isLive={isLive} /></span>
-        <button onClick={onCatalogue} className="min-h-10 rounded-[var(--radius-control)] border border-border-strong px-3 text-[13px] font-medium">
-          {copy.catalogue.open}
-        </button>
         <button onClick={() => setIsCreating(true)} className="min-h-10 rounded-[var(--radius-control)] bg-action px-3 text-[13px] font-medium text-action-text">
           {copy.newOrder.open}
         </button>

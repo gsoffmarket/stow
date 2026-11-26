@@ -111,6 +111,21 @@ export function createOrder(token: string, workspaceId: string, commandId: strin
   return call(`/v1/workspaces/${workspaceId}/orders`, { method: "POST", token, body: { commandId, ref, lines } });
 }
 
+export type Member = { id: string; name: string; role: Role; isLinked: boolean; devices: number; openOrders: number; isYou: boolean };
+
+export function listMembers(token: string, workspaceId: string): Promise<{ members: Member[] }> {
+  return call(`/v1/workspaces/${workspaceId}/members`, { method: "GET", token });
+}
+
+/** MemberChange is what an owner can do to one member; the server re-checks every rule. */
+export type MemberChange = { kind: "role"; role: Exclude<Role, "VIEWER"> } | { kind: "revoke" } | { kind: "remove" };
+
+export function changeMember(token: string, workspaceId: string, memberId: string, change: MemberChange): Promise<{ changed: true }> {
+  const base = `/v1/workspaces/${workspaceId}/members/${memberId}`;
+  if (change.kind === "role") return call(`${base}/role`, { method: "POST", token, body: { role: change.role } });
+  return call(change.kind === "revoke" ? `${base}/devices/revoke` : `${base}/remove`, { method: "POST", token, body: {} });
+}
+
 export type Picker = { id: string; name: string; openOrders: number };
 
 export function listPickers(token: string, workspaceId: string): Promise<{ pickers: Picker[] }> {

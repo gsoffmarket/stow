@@ -10,6 +10,7 @@ import { Catalogue } from "./Catalogue.tsx";
 import { OrderDetail } from "./OrderDetail.tsx";
 import { Orders } from "./Orders.tsx";
 import { Pair } from "./Pair.tsx";
+import { Team } from "./Team.tsx";
 import { launchData, startParam } from "./telegram.ts";
 import { Card, GhostButton, Mark, Page, PrimaryButton } from "./ui.tsx";
 
@@ -61,13 +62,16 @@ export function App() {
 
 function Signed({ session, view, setView }: { session: Session; view: "home" | "pair"; setView: (view: "home" | "pair") => void }) {
   const [openOrder, setOpenOrder] = useState<string | null>(null);
-  const [showCatalogue, setShowCatalogue] = useState(false);
+  const [page, setPage] = useState<"orders" | "catalogue" | "team">("orders");
   const pickers = session.memberships.filter((m) => m.role === "PICKER" || m.role === "OWNER");
   const coordinates = session.memberships.find((m) => m.role === "COORDINATOR" || m.role === "OWNER");
   if (session.memberships.length === 0) return <Message title={copy.noWorkspace.title} body={copy.noWorkspace.body} />;
   if (view === "pair" && pickers.length > 0) return <Pair token={session.token} workspaces={pickers} onBack={() => setView("home")} />;
-  if (coordinates && showCatalogue) {
-    return <Catalogue token={session.token} workspaceId={coordinates.workspaceId} onBack={() => setShowCatalogue(false)} />;
+  if (coordinates && page === "catalogue") {
+    return <Catalogue token={session.token} workspaceId={coordinates.workspaceId} onBack={() => setPage("orders")} />;
+  }
+  if (coordinates && page === "team") {
+    return <Team token={session.token} workspaceId={coordinates.workspaceId} isOwner={coordinates.role === "OWNER"} onBack={() => setPage("orders")} />;
   }
   if (coordinates && openOrder) {
     return <OrderDetail token={session.token} workspaceId={coordinates.workspaceId} orderId={openOrder} onBack={() => setOpenOrder(null)} />;
@@ -75,8 +79,12 @@ function Signed({ session, view, setView }: { session: Session; view: "home" | "
   if (coordinates) {
     return (
       <>
-        <Orders token={session.token} workspaceId={coordinates.workspaceId} onOpen={setOpenOrder} onCatalogue={() => setShowCatalogue(true)} />
-        {pickers.length > 0 && <GhostButton onClick={() => setView("pair")}>{copy.orders.pairGlasses}</GhostButton>}
+        <Orders token={session.token} workspaceId={coordinates.workspaceId} onOpen={setOpenOrder} />
+        <nav className="grid grid-flow-col auto-cols-fr gap-2">
+          <GhostButton onClick={() => setPage("catalogue")}>{copy.catalogue.open}</GhostButton>
+          <GhostButton onClick={() => setPage("team")}>{copy.team.open}</GhostButton>
+          {pickers.length > 0 && <GhostButton onClick={() => setView("pair")}>{copy.orders.pairGlasses}</GhostButton>}
+        </nav>
       </>
     );
   }
