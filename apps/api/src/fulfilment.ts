@@ -235,12 +235,34 @@ function eventPayload(command: Command, after: Order): Record<string, unknown> {
   }
 }
 
-/** WorkerView is the order a worker should see now and what to do with it. */
-export type WorkerView = { readonly order: Order | null; readonly plan: Plan | { readonly kind: "QUEUE_EMPTY" }; readonly cursor: string };
+/** TargetChange is one line's target before and after the revisions a worker has not yet seen. */
+export type TargetChange = { readonly sku: string; readonly from: number; readonly to: number; readonly picked: number };
+
+/** Decision is what a coordinator decided about the worker's report. */
+export type Decision = { readonly resolution: string; readonly sku: string; readonly target: number };
+
+/** Completed is the worker's most recently closed order and whether the group has heard. */
+export type Completed = {
+  readonly ref: string;
+  readonly terminal: "COMPLETED" | "CANCELLED";
+  readonly units: number;
+  readonly delivery: "SENT" | "PENDING" | "UNCERTAIN" | "FAILED" | "NOT_REQUIRED";
+};
+
+/** WorkerView is the order a worker should see now, what to do with it, and why it changed. */
+export type WorkerView = {
+  readonly order: Order | null;
+  readonly plan: Plan | { readonly kind: "QUEUE_EMPTY" };
+  readonly cursor: string;
+  readonly changes: readonly TargetChange[];
+  readonly decision: Decision | null;
+  readonly lastCompleted: Completed | null;
+};
 
 /**
  * workerView finds the worker's live order, or else the next queued one to
- * offer. It reads in one snapshot so the cursor matches the state returned.
+ * offer, with what the worker needs to understand a change. It reads in one
+ * snapshot so the cursor matches the state returned.
  */
 export async function workerView(pool: pg.Pool, workspaceId: string, workerId: string): Promise<WorkerView> {
   return transaction(pool, async (client) => {
@@ -262,8 +284,62 @@ export async function workerView(pool: pg.Pool, workspaceId: string, workerId: s
         );
     const orderId = queued.rows[0]?.order_id;
     const order = orderId ? await loadOrder(client, workspaceId, orderId, "read") : null;
-    return { order, plan: order ? plan(order, workerId) : { kind: "QUEUE_EMPTY" }, cursor: cursor.rows[0]?.event_seq ?? "0" };
+    const next = order ? plan(order, workerId) : ({ kind: "QUEUE_EMPTY" } as const);
+    return {
+      order,
+      plan: next,
+      cursor: cursor.rows[0]?.event_seq ?? "0",
+      changes: order && order.assignment && (next.kind === "REVISION_ACK" || next.kind === "RESOLUTION_ACK") ? await changesSince(client, order, order.assignment.ackRevision) : [],
+      decision: order && next.kind === "RESOLUTION_ACK" ? await decisionOn(client, workspaceId, next.exceptionId) : null,
+      lastCompleted: current.rows[0] ? null : await lastCompleted(client, workspaceId, workerId),
+    };
   }, "repeatable read");
+}
+
+// Collapses every revision after the one the worker acknowledged into a
+// single before/after per line, so several edits read as one change.
+async function changesSince(client: pg.ClientBase, order: Order, acknowledged: number): Promise<TargetChange[]> {
+  const { rows } = await client.query<{ prior_targets: Record<string, number> }>(
+    "select prior_targets from order_revisions where order_id = $1 and revision > $2 order by revision limit 1",
+    [order.id, acknowledged],
+  );
+  const before = rows[0]?.prior_targets ?? {};
+  return order.lines
+    .map((line) => ({ sku: line.sku, from: before[line.sku] ?? 0, to: line.requested, picked: line.picked }))
+    .filter((change) => change.from !== change.to);
+}
+
+async function decisionOn(client: pg.ClientBase, workspaceId: string, exceptionId: string): Promise<Decision | null> {
+  const { rows } = await client.query<{ resolution: string; sku: string; target: number }>(
+    `select e.resolution, l.sku_snapshot as sku, l.requested_qty as target
+     from order_exceptions e join order_lines l on l.id = e.line_id
+     where e.workspace_id = $1 and e.id = $2`,
+    [workspaceId, exceptionId],
+  );
+  return rows[0] ?? null;
+}
+
+// The order this worker most recently closed, if within the last 15 minutes,
+// with the state of its final status message in the group.
+async function lastCompleted(client: pg.ClientBase, workspaceId: string, workerId: string): Promise<Completed | null> {
+  const { rows } = await client.query<{ id: string; ref: string; terminal: "COMPLETED" | "CANCELLED"; units: number; connection_id: string | null; version: string }>(
+    `select o.id, o.ref, o.terminal, o.connection_id, o.version,
+            (select coalesce(sum(least(picked_qty, requested_qty)), 0)::int from order_lines l where l.order_id = o.id) as units
+     from assignments a join orders o on o.id = a.order_id
+     where a.workspace_id = $1 and a.worker_id = $2 and o.terminal is not null and o.updated_at > now() - interval '15 minutes'
+     order by o.updated_at desc limit 1`,
+    [workspaceId, workerId],
+  );
+  const order = rows[0];
+  if (!order) return null;
+  if (!order.connection_id) return { ref: order.ref, terminal: order.terminal, units: order.units, delivery: "NOT_REQUIRED" };
+  const outbox = await client.query<{ status: string }>(
+    "select status from telegram_outbox where order_id = $1 and kind = 'STATUS' and dedupe_key = 'status:' || $1 || ':' || $2",
+    [order.id, order.version],
+  );
+  const status = outbox.rows[0]?.status;
+  const delivery = status === "SENT" ? "SENT" : status === "UNCERTAIN" ? "UNCERTAIN" : status === "FAILED" ? "FAILED" : "PENDING";
+  return { ref: order.ref, terminal: order.terminal, units: order.units, delivery };
 }
 
 /** NewOrder is a parsed order request with where it came from. */

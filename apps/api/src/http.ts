@@ -93,7 +93,15 @@ export function buildHttp(options: HttpOptions): FastifyInstance {
       view.plan.kind === "TASK"
         ? { ...taskJson(view.plan.task, view.order!), taskToken: signTask(options.taskTokenSecret, device.memberId, view.plan.task) }
         : view.plan;
-    return ok(reply, request, { workspaceId: device.workspaceId, cursor: view.cursor, order: view.order && orderJson(view.order), plan });
+    return ok(reply, request, {
+      workspaceId: device.workspaceId,
+      cursor: view.cursor,
+      order: view.order && orderJson(view.order),
+      plan,
+      changes: view.changes,
+      decision: view.decision,
+      lastCompleted: view.lastCompleted,
+    });
   });
 
   app.post<{ Params: { wid: string } }>("/v1/workspaces/:wid/commands", async (request, reply) => {

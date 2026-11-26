@@ -174,3 +174,36 @@ describe("idempotency on nested commands", () => {
     expect(different).toEqual({ status: 409, body: { code: "IDEMPOTENCY_CONFLICT" } });
   });
 });
+
+describe("what the worker view explains", () => {
+  test("several revisions collapse into one before/after per changed line", async () => {
+    const s = await pickedOrder();
+    const shirts = await lineId(s, "TS-BLK-M");
+    const caps = await lineId(s, "CP-WHT");
+    await run(s.coordinator, { type: "REVISE_ORDER", orderId: s.orderId, ...(await at(s)), reason: "a", changes: [{ kind: "SET_QUANTITY", lineId: shirts, quantity: 2 }] });
+    await run(s.coordinator, { type: "REVISE_ORDER", orderId: s.orderId, ...(await at(s)), reason: "b", changes: [{ kind: "SET_QUANTITY", lineId: shirts, quantity: 1 }, { kind: "SET_QUANTITY", lineId: caps, quantity: 4 }] });
+    const view = await workerView(db.pool, s.workspaceId, s.picker.memberId);
+    expect(view.plan).toMatchObject({ kind: "REVISION_ACK", fromRevision: 1, toRevision: 3 });
+    expect(view.changes).toEqual([
+      { sku: "TS-BLK-M", from: 3, to: 1, picked: 3 },
+      { sku: "CP-WHT", from: 2, to: 4, picked: 0 },
+    ]);
+  });
+
+  test("a resolution to acknowledge says what was decided", async () => {
+    const s = await pickedOrder();
+    await run(s.picker, { type: "REPORT_EXCEPTION", orderId: s.orderId, ...(await at(s)), exceptionType: "SHORTAGE", reportedQty: 1 });
+    await run(s.coordinator, { type: "RESOLVE_EXCEPTION", orderId: s.orderId, ...(await at(s)), reason: "r", resolution: { kind: "REDUCE", quantity: 1 } });
+    const view = await workerView(db.pool, s.workspaceId, s.picker.memberId);
+    expect(view.decision).toEqual({ resolution: "REDUCE", sku: "CP-WHT", target: 1 });
+    expect(view.changes).toEqual([{ sku: "CP-WHT", from: 2, to: 1, picked: 0 }]);
+  });
+
+  test("after completing, the last order is reported with its delivery state", async () => {
+    const s = await pickedOrder();
+    await run(s.picker, { type: "CONFIRM_TASK", orderId: s.orderId, ...(await at(s)), kind: "PICK", lineId: await lineId(s, "CP-WHT"), quantity: 2 });
+    await run(s.picker, { type: "COMPLETE_ORDER", orderId: s.orderId, ...(await at(s)) });
+    const view = await workerView(db.pool, s.workspaceId, s.picker.memberId);
+    expect(view.lastCompleted).toMatchObject({ terminal: "COMPLETED", units: 5, delivery: "NOT_REQUIRED" });
+  });
+});
