@@ -22,6 +22,7 @@ const api: BotApi = {
     calls.push({ method: "edit", chatId, text, messageId });
     return nextEdit();
   },
+  answerCallbackQuery: async () => ({ kind: "ok", value: true }),
 };
 
 let db: TestDatabase;

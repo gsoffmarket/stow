@@ -67,3 +67,18 @@ describe("createBotApi", () => {
     expect(await api().editMessageText("-100", "77", "same")).toEqual({ kind: "ok", value: true });
   });
 });
+
+describe("inline buttons", () => {
+  test("sends a keyboard and refuses callback data over 64 bytes", async () => {
+    reply = () => ({ status: 200, json: { ok: true, result: { message_id: 1, chat: { id: -1, type: "group" } } } });
+    await api().sendMessage("-1", "pick one", undefined, [[{ text: "Confirm", data: "c:abc" }]]);
+    expect(seen.at(-1)!.body).toMatchObject({ reply_markup: { inline_keyboard: [[{ text: "Confirm", callback_data: "c:abc" }]] } });
+    await expect(api().sendMessage("-1", "x", undefined, [[{ text: "Big", data: "x".repeat(65) }]])).rejects.toThrow(/over 64 bytes/);
+  });
+
+  test("an edit without buttons clears the keyboard", async () => {
+    reply = () => ({ status: 200, json: { ok: true, result: true } });
+    await api().editMessageText("-1", "5", "decided");
+    expect(seen.at(-1)!.body).toMatchObject({ reply_markup: { inline_keyboard: [] } });
+  });
+});
