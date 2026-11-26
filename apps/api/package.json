@@ -6,7 +6,9 @@
     "migrate": "node src/db/migrate.ts"
   },
   "dependencies": {
-    "pg": "8.23.1"
+    "pg": "8.23.1",
+    "@stow/order-engine": "workspace:*",
+    "@stow/telegram": "workspace:*"
   },
   "devDependencies": {
     "@types/pg": "8.23.1"

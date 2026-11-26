@@ -20,6 +20,12 @@ importers:
 
   apps/api:
     dependencies:
+      '@stow/order-engine':
+        specifier: workspace:*
+        version: link:../../packages/order-engine
+      '@stow/telegram':
+        specifier: workspace:*
+        version: link:../../packages/telegram
       pg:
         specifier: 8.23.1
         version: 8.23.1
