@@ -1,0 +1,81 @@
+// The Mini App shell: sign in with Telegram's launch data, then show what
+// this person can do. Opening it with ?startapp=pair goes straight to pairing.
+
+import { useEffect, useState } from "react";
+import { signIn, type Session } from "./api.ts";
+import { copy } from "./copy.ts";
+import { Pair } from "./Pair.tsx";
+import { launchData, startParam } from "./telegram.ts";
+import { Card, GhostButton, Mark, Page, PrimaryButton } from "./ui.tsx";
+
+type State = { kind: "outside" } | { kind: "signing-in" } | { kind: "failed" } | { kind: "ready"; session: Session };
+
+export function App() {
+  const [state, setState] = useState<State>(() => (launchData() ? { kind: "signing-in" } : { kind: "outside" }));
+  const [view, setView] = useState<"home" | "pair">(() => (startParam() === "pair" ? "pair" : "home"));
+  const [attempt, setAttempt] = useState(0);
+
+  useEffect(() => {
+    const data = launchData();
+    if (!data) return;
+    let cancelled = false;
+    signIn(data)
+      .then((session) => !cancelled && setState({ kind: "ready", session }))
+      .catch(() => !cancelled && setState({ kind: "failed" }));
+    return () => {
+      cancelled = true;
+    };
+  }, [attempt]);
+
+  return (
+    <Page>
+      <header className="flex items-center gap-2.5">
+        <Mark />
+        <span className="text-[15px] font-semibold tracking-[0.01em]">Stow</span>
+      </header>
+      {state.kind === "outside" && <Message title={copy.openFromTelegram.title} body={copy.openFromTelegram.body} />}
+      {state.kind === "signing-in" && <p className="text-text-secondary" role="status">{copy.signingIn}</p>}
+      {state.kind === "failed" && (
+        <Message title={copy.signInFailed.title} body={copy.signInFailed.body}>
+          <GhostButton onClick={() => { setState({ kind: "signing-in" }); setAttempt((n) => n + 1); }}>{copy.signInFailed.retry}</GhostButton>
+        </Message>
+      )}
+      {state.kind === "ready" && <Signed session={state.session} view={view} setView={setView} />}
+    </Page>
+  );
+}
+
+function Signed({ session, view, setView }: { session: Session; view: "home" | "pair"; setView: (view: "home" | "pair") => void }) {
+  const pickers = session.memberships.filter((m) => m.role === "PICKER" || m.role === "OWNER");
+  if (session.memberships.length === 0) return <Message title={copy.noWorkspace.title} body={copy.noWorkspace.body} />;
+  if (view === "pair" && pickers.length > 0) return <Pair token={session.token} workspaces={pickers} onBack={() => setView("home")} />;
+  return (
+    <Card>
+      <h1 className="text-2xl font-medium">{copy.home.greeting(session.user.firstName)}</h1>
+      <ul className="flex flex-col gap-2">
+        {session.memberships.map((m) => (
+          <li key={m.workspaceId} className="flex items-center justify-between rounded-[var(--radius-control)] bg-surface-recessed px-4 py-3">
+            <span className="text-[15px]">{m.workspaceName}</span>
+            <span className="rounded-[var(--radius-badge)] bg-surface-raised px-2 py-0.5 text-[11px] font-semibold tracking-[0.04em] text-text-secondary">{m.role}</span>
+          </li>
+        ))}
+      </ul>
+      {pickers.length > 0 && (
+        <div className="flex flex-col gap-2">
+          <PrimaryButton onClick={() => setView("pair")}>{copy.home.pair}</PrimaryButton>
+          <p className="text-[13px] text-text-muted">{copy.home.pairHint}</p>
+        </div>
+      )}
+    </Card>
+  );
+}
+
+function Message({ title, body, children }: { title: string; body: string; children?: React.ReactNode }) {
+  return (
+    <Card>
+      <h1 className="text-2xl font-medium">{title}</h1>
+      <p className="text-[15px] leading-normal text-text-secondary">{body}</p>
+      {children}
+    </Card>
+  );
+}
