@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { parseCommand, parseOrder, type Command } from "./commands.ts";
+import { parseCommand, parseOrder, parseRefAndText, parseRevise, type Command } from "./commands.ts";
 
 const bot = "stow_test_bot";
 
@@ -73,5 +73,29 @@ describe("parseOrder", () => {
     expect(parseOrder(order("", ...many))).toEqual({ ok: false, errors: [{ code: "TOO_MANY_LINES" }] });
     const heavy = ["A x 10000", "B x 10000", "C x 1"];
     expect(parseOrder(order("", ...heavy))).toEqual({ ok: false, errors: [{ code: "ORDER_TOO_LARGE" }] });
+  });
+});
+
+describe("parseRevise", () => {
+  test("takes the one-line form and the multi-line form, with zero allowed", () => {
+    expect(parseRevise({ name: "revise", args: "ST-1042 cp-wht 4", body: [] })).toEqual({ ok: true, ref: "ST-1042", lines: [{ sku: "CP-WHT", quantity: 4 }] });
+    expect(parseRevise({ name: "revise", args: "ST-1042", body: ["TS-BLK-M x 0", "CP-GRY x 2"] })).toEqual({
+      ok: true,
+      ref: "ST-1042",
+      lines: [{ sku: "TS-BLK-M", quantity: 0 }, { sku: "CP-GRY", quantity: 2 }],
+    });
+  });
+
+  test("needs a ref and at least one line", () => {
+    expect(parseRevise({ name: "revise", args: "", body: ["A x 1"] })).toEqual({ ok: false, errors: [{ code: "INVALID_REF" }] });
+    expect(parseRevise({ name: "revise", args: "ST-1", body: [] })).toEqual({ ok: false, errors: [{ code: "NO_LINES" }] });
+  });
+});
+
+describe("parseRefAndText", () => {
+  test("splits a ref from the reason", () => {
+    expect(parseRefAndText("ST-1 customer changed their mind")).toEqual({ ref: "ST-1", text: "customer changed their mind" });
+    expect(parseRefAndText("ST-1")).toEqual({ ref: "ST-1", text: "" });
+    expect(parseRefAndText("")).toBeNull();
   });
 });
