@@ -29,6 +29,7 @@ export type Snapshot = {
     readonly version: string;
     readonly isCancelRequested: boolean;
     readonly toteId: string | null;
+    readonly lines: readonly { readonly requested: number }[];
   } | null;
   readonly plan:
     | {
@@ -207,8 +208,12 @@ export function screenFor(snapshot: Snapshot | null, link: Link, dismissedRef: s
       return screen(`${ref}   WAITING`, "PROBLEM REPORTED\nWaiting for the coordinator.\nKeep the tote as it is.", "TAP TO REFRESH", refresh);
     case "PAUSED":
       return screen(`${ref}   PAUSED`, "PAUSED\nYour tote stays assigned to you.", "TAP TO RESUME", { type: "RESUME" });
-    case "OFFER":
-      return screen(`${ref}   NEW ORDER`, `${ref}\nReady to pick.`, "TAP TO START", { type: "CLAIM" });
+    case "OFFER": {
+      const lines = snapshot.order?.lines ?? [];
+      const units = lines.reduce((sum, line) => sum + line.requested, 0);
+      const size = `${lines.length} ${lines.length === 1 ? "LINE" : "LINES"} · ${units} ${units === 1 ? "UNIT" : "UNITS"}`;
+      return screen(`${ref}   NEW ORDER`, `${ref}\n${size}\nReady to pick.`, "TAP TO START", { type: "CLAIM" });
+    }
     case "REVIEW_COMPLETE":
       return screen(`${ref}   REVIEW`, "ALL ITEMS IN THE TOTE\nCheck the tote, then complete.", "TAP TO COMPLETE", { type: "COMPLETE" }, [{ label: "PAUSE ORDER", action: { type: "PAUSE" } }]);
     case "REVIEW_CANCEL":
