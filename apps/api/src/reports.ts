@@ -8,6 +8,7 @@
 // number.
 
 import type pg from "pg";
+import { writeCsv } from "./csv.ts";
 
 /** rangeLimit_days caps a report so one request cannot scan a workspace's whole history. */
 export const rangeLimit_days = 366;
@@ -120,17 +121,8 @@ export async function ordersCsv(pool: pg.Pool, workspaceId: string, range: Range
      order by o.created_at, o.id limit ${exportRows_max}`,
     [workspaceId, range.from, range.to, range.timeZone],
   );
-  const header = ["ref", "status", "source", "created_at_utc", "closed_at_utc", "picker", "lines", "units_requested", "units_confirmed", "revision", "problems"];
-  const lines = rows.map((row) =>
-    [row.ref, row.status, row.source, row.created_at.toISOString(), row.closed_at?.toISOString() ?? "", row.picker ?? "", row.lines, row.requested, row.confirmed, row.revision, row.problems].map(cell).join(","),
-  );
-  return [header.join(","), ...lines].join("\r\n") + "\r\n";
-}
-
-// RFC 4180 quoting, plus a leading apostrophe on anything a spreadsheet would
-// run as a formula (OWASP CSV injection): names and refs come from users.
-function cell(value: string | number): string {
-  if (typeof value === "number") return String(value);
-  const safe = /^[=+\-@\t\r]/.test(value) ? `'${value}` : value;
-  return /[",\r\n]/.test(safe) ? `"${safe.replace(/"/g, '""')}"` : safe;
+  return writeCsv([
+    ["ref", "status", "source", "created_at_utc", "closed_at_utc", "picker", "lines", "units_requested", "units_confirmed", "revision", "problems"],
+    ...rows.map((row) => [row.ref, row.status, row.source, row.created_at.toISOString(), row.closed_at?.toISOString() ?? "", row.picker ?? "", row.lines, row.requested, row.confirmed, row.revision, row.problems]),
+  ]);
 }

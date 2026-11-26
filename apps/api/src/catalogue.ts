@@ -9,6 +9,7 @@
 // explicitly, and active orders keep their own snapshot of names and bins.
 
 import type pg from "pg";
+import { readCsv } from "./csv.ts";
 import { transaction } from "./fulfilment.ts";
 
 export const importLimits = { bytes: 2 * 1024 * 1024, rows: 5000 } as const;
@@ -22,7 +23,7 @@ export type RowError = { readonly line: number; readonly field: string; readonly
 export function parseCatalogue(text: string): { rows: CatalogueRow[]; errors: RowError[] } {
   const errors: RowError[] = [];
   if (Buffer.byteLength(text) > importLimits.bytes) return { rows: [], errors: [{ line: 0, field: "file", problem: "larger than 2 MB" }] };
-  const records = splitCsv(text.replace(/^﻿/, ""));
+  const records = readCsv(text.replace(/^﻿/, ""));
   const header = (records.shift() ?? []).map((cell) => cell.trim().toLowerCase());
   const unknown = header.filter((name) => !(columns as readonly string[]).includes(name));
   if (!header.includes("sku") || !header.includes("name")) errors.push({ line: 1, field: "header", problem: "needs sku and name columns" });
@@ -49,39 +50,6 @@ export function parseCatalogue(text: string): { rows: CatalogueRow[]; errors: Ro
     rows.push({ line, sku, name, bin: bin || null, routeRank: rank === "" ? 0 : Number(rank) });
   });
   return { rows: errors.length > 0 ? [] : rows, errors };
-}
-
-// RFC 4180: quoted fields may contain commas, quotes ("") and line breaks.
-function splitCsv(text: string): string[][] {
-  const records: string[][] = [];
-  let record: string[] = [];
-  let field = "";
-  let quoted = false;
-  for (let i = 0; i < text.length; i++) {
-    const char = text[i]!;
-    if (quoted) {
-      if (char === '"' && text[i + 1] === '"') {
-        field += '"';
-        i++;
-      } else if (char === '"') quoted = false;
-      else field += char;
-    } else if (char === '"' && field === "") quoted = true;
-    else if (char === ",") {
-      record.push(field);
-      field = "";
-    } else if (char === "\n" || char === "\r") {
-      if (char === "\r" && text[i + 1] === "\n") i++;
-      record.push(field);
-      records.push(record);
-      record = [];
-      field = "";
-    } else field += char;
-  }
-  if (field !== "" || record.length > 0) {
-    record.push(field);
-    records.push(record);
-  }
-  return records;
 }
 
 export type Fate = "NEW" | "UPDATE" | "UNCHANGED";
