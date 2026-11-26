@@ -9,6 +9,7 @@ import { lazy, Suspense, useEffect, useState } from "react";
 import { signIn, type Session } from "./api.ts";
 import { copy } from "./copy.ts";
 import { Catalogue } from "./Catalogue.tsx";
+import { DraftList, DraftPage } from "./Drafts.tsx";
 import { OrderDetail } from "./OrderDetail.tsx";
 import { Orders } from "./Orders.tsx";
 import { Help } from "./Help.tsx";
@@ -19,7 +20,7 @@ import { Settings } from "./Settings.tsx";
 import { SetupChecklist } from "./SetupChecklist.tsx";
 import { Team } from "./Team.tsx";
 import { TelegramSetup } from "./TelegramSetup.tsx";
-import { launchData, openBot, startOrder, startParam } from "./telegram.ts";
+import { launchData, openBot, startDraft, startOrder, startParam } from "./telegram.ts";
 import { Card, GhostButton, Mark, Page, PrimaryButton } from "./ui.tsx";
 
 const Landing = lazy(() => import("./Landing.tsx"));
@@ -72,6 +73,8 @@ export function App() {
 function Signed({ session, view, setView }: { session: Session; view: "home" | "pair"; setView: (view: "home" | "pair") => void }) {
   // An "Open in Stow" link from a group status message opens straight on its order.
   const [openOrder, setOpenOrder] = useState<string | null>(startOrder);
+  // A "Fix in Stow" link from a draft message opens straight on that draft.
+  const [openDraft, setOpenDraft] = useState<string | null>(startDraft);
   const [page, setPage] = useState<"orders" | "catalogue" | "team" | "sessions" | "telegram" | "reports" | "settings" | "help">("orders");
   const pickers = session.memberships.filter((m) => m.role === "PICKER" || m.role === "OWNER");
   const coordinates = session.memberships.find((m) => m.role === "COORDINATOR" || m.role === "OWNER");
@@ -96,6 +99,20 @@ function Signed({ session, view, setView }: { session: Session; view: "home" | "
   if (coordinates && page === "team") {
     return <Team token={session.token} workspaceId={coordinates.workspaceId} isOwner={coordinates.role === "OWNER"} onBack={() => setPage("orders")} />;
   }
+  if (coordinates && openDraft) {
+    return (
+      <DraftPage
+        token={session.token}
+        workspaceId={coordinates.workspaceId}
+        draftId={openDraft}
+        onBack={() => setOpenDraft(null)}
+        onCreated={(orderId) => {
+          setOpenDraft(null);
+          setOpenOrder(orderId);
+        }}
+      />
+    );
+  }
   if (coordinates && openOrder) {
     return <OrderDetail token={session.token} workspaceId={coordinates.workspaceId} orderId={openOrder} onBack={() => setOpenOrder(null)} />;
   }
@@ -108,6 +125,7 @@ function Signed({ session, view, setView }: { session: Session; view: "home" | "
           canPair={pickers.length > 0}
           onGo={(destination) => (destination === "pair" ? setView("pair") : destination === "bot" ? openBot() : setPage(destination))}
         />
+        <DraftList token={session.token} workspaceId={coordinates.workspaceId} onOpen={setOpenDraft} />
         <Orders token={session.token} workspaceId={coordinates.workspaceId} onOpen={setOpenOrder} />
         <nav className="grid grid-cols-2 gap-2">
           <GhostButton onClick={() => setPage("catalogue")}>{copy.catalogue.open}</GhostButton>
