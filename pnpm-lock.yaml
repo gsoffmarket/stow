@@ -40,6 +40,22 @@ importers:
         specifier: 8.23.1
         version: 8.23.1
 
+  apps/glasses:
+    dependencies:
+      '@evenrealities/even_hub_sdk':
+        specifier: 0.0.16
+        version: 0.0.16
+    devDependencies:
+      '@evenrealities/evenhub-cli':
+        specifier: 0.2.0
+        version: 0.2.0
+      '@evenrealities/evenhub-simulator':
+        specifier: 0.9.5
+        version: 0.9.5
+      vite:
+        specifier: 8.4.0
+        version: 8.4.0(@types/node@24.19.4)
+
   packages/order-engine: {}
 
   packages/telegram: {}
@@ -54,6 +70,55 @@ packages:
 
   '@emnapi/wasi-threads@2.2.0':
     resolution: {integrity: sha512-JP7OYH38Q7+pyTAe14raZHLQIK7BDKbdwji+Xi3pcd/6QkJYQH3SX4wu6EplGrGJWRepoNzedfm0G3B9Z4e9Rw==}
+
+  '@evenrealities/even_hub_sdk@0.0.16':
+    resolution: {integrity: sha512-8/qMR4W3vna6xAM5/dFDmKoTR98D7Vo3TDBrtS0JgdUSvBVyAnUXuhODI3H587fI2TfLbp4T+FNT3EdkB3+Big==}
+    engines: {node: ^20.0.0 || >=22.0.0}
+
+  '@evenrealities/evenhub-cli@0.2.0':
+    resolution: {integrity: sha512-OCjgPmq49LiVXX417P4Jm0z8Uz+53536UCj20HMC32BLTYlwmJrkoaGsCgEObv87+HIQYKtlLZ7UW4/Qs66RMw==}
+    engines: {node: ^20.17.0 || ^22.13.0 || >=23.5.0}
+    hasBin: true
+
+  '@evenrealities/evenhub-simulator@0.9.5':
+    resolution: {integrity: sha512-pGqNoog8BI9qatQQOwqgaz+jWHvktjIcrCIHkWNrwGpN8oCZIkz9oIFdtstpk6CG/QiO3NhFuaVpInBYb3KhfQ==}
+    hasBin: true
+
+  '@evenrealities/sim-darwin-arm64@0.9.5':
+    resolution: {integrity: sha512-BDEFOrECb/jyocMuw5LbVew/KgBElgtLAQgNngcvOf6/Rx6GLadeLDj3LMKLbbhIYHLmM5cx1HX8AgSjon3kvg==}
+    cpu: [arm64]
+    os: [darwin]
+    hasBin: true
+
+  '@evenrealities/sim-darwin-x64@0.9.5':
+    resolution: {integrity: sha512-fZ+FcZUZ0kQqY56vmUI9blPpNEQ1bGmdyrvAz/ibxpXd4dtD8ej4qjGKPl1ZI2+OSTy7b4oS512o/day+Cp+FA==}
+    cpu: [x64]
+    os: [darwin]
+    hasBin: true
+
+  '@evenrealities/sim-linux-arm64@0.9.5':
+    resolution: {integrity: sha512-HAYPupYYQ75d/+fevQtTk6ZNxNuU5/ZFJ/GUmd6mhIwsiiCAUr1rXyO1wJJwP59gQut/Y62rEdh950yzP+5oag==}
+    cpu: [arm64]
+    os: [linux]
+    hasBin: true
+
+  '@evenrealities/sim-linux-x64@0.9.5':
+    resolution: {integrity: sha512-N2Aoye8an5CWew7WaVREFXOtdt4cxta9pzpZq0ojd+IInGjBvTilqepPn5PJay8w3Al5m25G5nz+JT/KepTzgg==}
+    cpu: [x64]
+    os: [linux]
+    hasBin: true
+
+  '@evenrealities/sim-win32-arm64@0.9.5':
+    resolution: {integrity: sha512-lXCRa9cFz9YXzWhLlct3Qk7WpolUl/zbWZFfZYMYCaCnDT1i5ME1Obs4eQv65e/IPjNL7nu67Ff4Dwp1WCrG8g==}
+    cpu: [arm64]
+    os: [win32]
+    hasBin: true
+
+  '@evenrealities/sim-win32-x64@0.9.5':
+    resolution: {integrity: sha512-AwN4O1tOxFr+VwXKZjCHb353HyJOSHTlagnsgoOehabNY1p3GmlpUfwD2R30uSCKUNO4gEzEKtbkSCbncqcZ4g==}
+    cpu: [x64]
+    os: [win32]
+    hasBin: true
 
   '@fastify/ajv-compiler@4.0.8':
     resolution: {integrity: sha512-xYcAFYoyP/NELMgj6I7LmMAmiqeXMal0wsM2SgueN9OyMr6bVKHomO9OxuStC7bIAEl4Z3JXBbDPwpXRp59NPQ==}
@@ -823,6 +888,37 @@ snapshots:
   '@emnapi/wasi-threads@2.2.0':
     dependencies:
       tslib: 2.9.1
+    optional: true
+
+  '@evenrealities/even_hub_sdk@0.0.16': {}
+
+  '@evenrealities/evenhub-cli@0.2.0': {}
+
+  '@evenrealities/evenhub-simulator@0.9.5':
+    optionalDependencies:
+      '@evenrealities/sim-darwin-arm64': 0.9.5
+      '@evenrealities/sim-darwin-x64': 0.9.5
+      '@evenrealities/sim-linux-arm64': 0.9.5
+      '@evenrealities/sim-linux-x64': 0.9.5
+      '@evenrealities/sim-win32-arm64': 0.9.5
+      '@evenrealities/sim-win32-x64': 0.9.5
+
+  '@evenrealities/sim-darwin-arm64@0.9.5':
+    optional: true
+
+  '@evenrealities/sim-darwin-x64@0.9.5':
+    optional: true
+
+  '@evenrealities/sim-linux-arm64@0.9.5':
+    optional: true
+
+  '@evenrealities/sim-linux-x64@0.9.5':
+    optional: true
+
+  '@evenrealities/sim-win32-arm64@0.9.5':
+    optional: true
+
+  '@evenrealities/sim-win32-x64@0.9.5':
     optional: true
 
   '@fastify/ajv-compiler@4.0.8':
