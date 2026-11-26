@@ -254,6 +254,12 @@ function commandFor(action: Action): object | null {
       return { type: "RESUME_ORDER", ...expected, payload: {} };
     case "CLOSE_CANCELLED":
       return { type: "CLOSE_CANCELLED", ...expected, payload: {} };
+    case "PREPARE_RELEASE":
+      return { type: "PREPARE_RELEASE", ...expected, payload: {} };
+    case "CANCEL_RELEASE":
+      return { type: "CANCEL_RELEASE", ...expected, payload: {} };
+    case "RELEASE":
+      return { type: "RELEASE_ORDER", ...expected, payload: {} };
     case "ACK_RESOLUTION":
       return { type: "ACK_RESOLUTION", ...expected, payload: { exceptionId: action.exceptionId } };
     case "REPORT":
