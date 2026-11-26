@@ -26,10 +26,17 @@ Telegram group ◀── edit status message ◀── outbox ◀┘
 | `packages/telegram/src/botapi.ts` | Bot API client that classifies every outcome as ok, retry, rejected or unknown. |
 | `apps/api/src/fulfilment.ts` | Imperative shell around the engine: transactions, locking, idempotency, events, outbox. |
 | `apps/api/src/http.ts` | Fastify routes for the glasses: worker snapshot and commands. Device auth and task tokens. |
-| `apps/api/src/telegram.ts` | Inbox intake, group binding, `/order`, outbox delivery, polling loops. |
+| `apps/api/src/telegram.ts` | Inbox intake, onboarding (`/setup`, `/stow_connect`, invites), `/order`, previews with buttons, shortage decisions, outbox delivery, polling loops. |
+| `apps/api/src/messages.ts` | Coordinator notes to the glasses and picker quick replies to the group. Never change the order. |
+| `apps/api/src/identity.ts` | Mini App sign-in: verifies Telegram's signed launch data, issues sessions, lists memberships. |
+| `apps/api/src/devices.ts` | Glasses pairing: code, approval from the Mini App, one-time token exchange. |
+| `apps/api/src/console.ts` | Read models for the coordinator console. |
 | `apps/api/src/local.ts` | Local-only setup, test order and bind-code commands. |
 | `apps/glasses/src/screens.ts` | Pure choice of what the glasses show for a snapshot and link state. |
-| `apps/glasses/src/main.ts` | Even Hub bridge glue: render, input, polling, command sending. |
+| `apps/glasses/src/main.ts` | Even Hub bridge glue: render, input, pairing, polling, command sending. |
+| `apps/companion/src/` | Telegram Mini App: sign-in, pairing approval, coordinator console. |
+| `packages/ui-tokens/tokens.css` | Design tokens shared by the Mini App. |
+| `deploy/` | Docker Compose, Caddy and the image build for one VPS. |
 | `db/migrations/` | Forward-only SQL migrations. |
 
 ## Invariants
@@ -47,6 +54,7 @@ Telegram group ◀── edit status message ◀── outbox ◀┘
 ## Boundaries
 
 - **Glasses ↔ API:** HTTPS JSON. The glasses hold an opaque device token (stored hashed) and send back the task token issued with each task.
+- **Mini App ↔ API:** HTTPS JSON with a short-lived session obtained by exchanging Telegram's signed launch data.
 - **API ↔ Telegram:** Bot API over HTTPS. Long polling locally; a webhook in hosted deployments (never both for one bot).
 - **API ↔ Postgres:** the only durable state.
 
@@ -60,6 +68,9 @@ Telegram group ◀── edit status message ◀── outbox ◀┘
 | Server runtime | Node 24 running TypeScript directly (type stripping) | A build step or tsx: unnecessary with erasable-only syntax. |
 | Glasses layout | Three text containers updated in place | Image rendering for larger type: image updates cost seconds over Bluetooth; text updates are instant and flicker-free. |
 | Status message | One bot message per order, edited in place | A message per change: noisy for the group and harder to read. |
+| Sign-in | Telegram identity everywhere: bot commands, Mini App launch data, pairing approved in the Mini App | Email via a hosted auth provider: an extra vendor and login for people who already live in Telegram. |
+| Glasses secondary actions | A More screen drawn in text containers, opened by swipe | The SDK's native menu: in simulator 0.9.5 it opened empty and could not select items. |
+| Hosting | One VPS: Postgres, API and Caddy in Docker Compose | Serverless or Supabase-only: the Telegram loops need a process that runs continuously. |
 
 ## Defaults applied
 
