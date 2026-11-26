@@ -218,7 +218,7 @@ export async function startBatch(pool: pg.Pool, actor: Actor, commandId: string,
 }
 
 async function isPicker(client: pg.ClientBase, workspaceId: string, memberId: string): Promise<boolean> {
-  const { rowCount } = await client.query("select 1 from members where workspace_id = $1 and id = $2 and role in ('PICKER', 'OWNER')", [workspaceId, memberId]);
+  const { rowCount } = await client.query("select 1 from members where workspace_id = $1 and id = $2 and role in ('PICKER', 'OWNER') and removed_at is null", [workspaceId, memberId]);
   return rowCount === 1;
 }
 
