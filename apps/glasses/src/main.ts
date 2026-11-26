@@ -394,9 +394,18 @@ function listen(): void {
   });
 }
 
+// The next round is scheduled whatever this one did. refresh and pairStep
+// handle network errors, but a draw can still fail (a bridge call timing out);
+// before this, one such failure ended polling for good and the glasses sat on
+// their last screen while new orders waited.
 async function pollLoop(): Promise<void> {
-  if (isForeground && link !== "saving" && link !== "uncertain") await (credentials ? refresh() : pairStep());
-  setTimeout(() => void pollLoop(), credentials ? pollInterval_ms : pairingPoll_ms);
+  try {
+    if (isForeground && link !== "saving" && link !== "uncertain") await (credentials ? refresh() : pairStep());
+  } catch (error) {
+    console.warn("poll round failed", error);
+  } finally {
+    setTimeout(() => void pollLoop(), credentials ? pollInterval_ms : pairingPoll_ms);
+  }
 }
 
 bridge = await waitForEvenAppBridge();
