@@ -16,6 +16,8 @@ const app = buildHttp({
   now: () => new Date(),
   corsAllowedOrigins: config.CORS_ALLOWED_ORIGINS,
   logger: true,
+  // Production runs behind Caddy; locally the API is reached directly.
+  trustProxy: config.APP_ENV === "production" || config.APP_ENV === "staging",
 });
 const stop = new AbortController();
 
