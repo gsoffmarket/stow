@@ -13,13 +13,17 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import type pg from "pg";
 import type { BotApi, Button, CallbackQuery, Message, Result, Update } from "@stow/telegram/botapi";
 import { parseCommand, parseOrder, parseRefAndText, parseRevise, type Command as BotCommand, type OrderError } from "@stow/telegram/commands";
-import { reducedTarget, renderException, renderStatus, type ExceptionNotice } from "@stow/telegram/status";
+import { reducedTarget, renderException, renderReply, renderStatus, type ExceptionNotice } from "@stow/telegram/status";
+import { postNote } from "./messages.ts";
 import { createOrder, loadOrder, runCommand, transaction, type Command, type CommandResult, type RevisionChange, type Role } from "./fulfilment.ts";
 
 export type Telegram = { readonly pool: pg.Pool; readonly api: BotApi; readonly botAlias: string; readonly botUsername: string };
 
 /** StoredMessage is the minimum kept from a command message; other updates keep nothing. */
 type StoredMessage = { kind?: "message"; chatId: string; chatType: string; fromId: string; fromName: string; messageId: number; text: string };
+
+/** StoredNote is a coordinator's reply to one of Stow's status messages. */
+type StoredNote = { kind: "note"; chatId: string; fromId: string; replyTo: number; text: string };
 
 /** StoredPress is the minimum kept from a button press under one of the bot's messages. */
 type StoredPress = { kind: "press"; callbackId: string; chatId: string; fromId: string; messageId: number; data: string };
@@ -33,7 +37,7 @@ const backoff_s = [1, 2, 5, 10, 30, 60, 120, 300];
 
 /** receive stores an update once. Updates that are not commands are kept only as a dedupe marker. */
 export async function receive(pool: pg.Pool, botAlias: string, update: Update): Promise<void> {
-  const message = commandMessage(update.message) ?? buttonPress(update.callback_query);
+  const message = commandMessage(update.message) ?? buttonPress(update.callback_query) ?? (await replyToStatus(pool, update.message));
   await pool.query(
     `insert into telegram_inbox (bot_alias, update_id, status, payload) values ($1, $2, $3, $4)
      on conflict (bot_alias, update_id) do nothing`,
@@ -55,6 +59,20 @@ function commandMessage(message: Message | undefined): StoredMessage | null {
   };
 }
 
+// A plain-text reply is kept only when it answers one of Stow's own status
+// messages in a bound chat; every other message is ignored unread.
+async function replyToStatus(pool: pg.Pool, message: Message | undefined): Promise<StoredNote | null> {
+  const replyTo = message?.reply_to_message?.message_id;
+  if (!message?.text || !replyTo || !message.from || message.from.is_bot || message.sender_chat || message.forward_origin) return null;
+  const { rowCount } = await pool.query(
+    `select 1 from telegram_message_refs r join telegram_connections c on c.id = r.connection_id and c.status = 'ACTIVE'
+     where c.chat_id = $1 and r.message_id = $2 and r.purpose = 'STATUS'`,
+    [String(message.chat.id), String(replyTo)],
+  );
+  if (!rowCount) return null;
+  return { kind: "note", chatId: String(message.chat.id), fromId: String(message.from.id), replyTo, text: message.text.slice(0, 280) };
+}
+
 function buttonPress(press: CallbackQuery | undefined): StoredPress | null {
   if (!press?.data || !press.message || press.from.is_bot) return null;
   return { kind: "press", callbackId: press.id, chatId: String(press.message.chat.id), fromId: String(press.from.id), messageId: press.message.message_id, data: press.data };
@@ -62,7 +80,7 @@ function buttonPress(press: CallbackQuery | undefined): StoredPress | null {
 
 /** processInbox handles up to one batch of pending commands and returns how many it took. */
 export async function processInbox(telegram: Telegram): Promise<number> {
-  const { rows } = await telegram.pool.query<{ id: string; update_id: string; payload: StoredMessage | StoredPress; attempts: number }>(
+  const { rows } = await telegram.pool.query<{ id: string; update_id: string; payload: StoredMessage | StoredPress | StoredNote; attempts: number }>(
     `update telegram_inbox set attempts = attempts + 1, next_attempt_at = now() + interval '${lease_s} seconds'
      where id in (select id from telegram_inbox where status = 'PENDING' and next_attempt_at <= now()
                   order by update_id::numeric limit ${batchSize} for update skip locked)
@@ -87,8 +105,9 @@ export async function processInbox(telegram: Telegram): Promise<number> {
   return rows.length;
 }
 
-async function handle(telegram: Telegram, message: StoredMessage | StoredPress): Promise<void> {
+async function handle(telegram: Telegram, message: StoredMessage | StoredPress | StoredNote): Promise<void> {
   if (message.kind === "press") return press(telegram, message);
+  if (message.kind === "note") return noteFromReply(telegram, message);
   const command = parseCommand(message.text, telegram.botUsername);
   if (!command) return;
   const reply = (text: string) => telegram.api.sendMessage(message.chatId, text, message.messageId);
@@ -116,6 +135,11 @@ async function handle(telegram: Telegram, message: StoredMessage | StoredPress):
       if (answer) await reply(answer);
       return;
     }
+    case "note": {
+      const answer = await noteCommand(telegram, message, command.args);
+      if (answer) await reply(answer);
+      return;
+    }
     case "revise":
     case "cancel":
     case "resolve":
@@ -136,6 +160,7 @@ const helpText = [
   "/revise REF SKU QTY sets a new target (0 removes it).",
   "/cancel REF reason cancels an order.",
   "/resolve REF SKU QTY substitutes a SKU for the reported item.",
+  "/note REF text, or a reply to an order's status message, shows a note on the picker's glasses.",
   "Every change is previewed first and applied only when you confirm.",
   "",
   "Stow only reads commands sent to it. It does not read other messages.",
@@ -372,6 +397,30 @@ async function preview(telegram: Telegram, message: StoredMessage, command: BotC
   await reply(planned.text, [[{ text: "Confirm", data: `a:${token}` }, { text: "Discard", data: `d:${token}` }]]);
 }
 
+// A reply to an order's status message becomes a note on the picker's
+// glasses. Only coordinators' replies count; the status message then says
+// whether the note was read, so no extra chat message is needed.
+async function noteFromReply(telegram: Telegram, note: StoredNote): Promise<void> {
+  const member = await chatMember(telegram.pool, note.chatId, note.fromId);
+  if (!isCoordinator(member)) return;
+  const { rows } = await telegram.pool.query<{ order_id: string }>(
+    "select order_id from telegram_message_refs where connection_id = $1 and message_id = $2 and purpose = 'STATUS'",
+    [member.connectionId, String(note.replyTo)],
+  );
+  if (rows[0]) await postNote(telegram.pool, member.workspaceId, rows[0].order_id, member.memberId, note.text);
+}
+
+async function noteCommand(telegram: Telegram, message: StoredMessage, args: string): Promise<string | null> {
+  const member = await chatMember(telegram.pool, message.chatId, message.fromId);
+  if (!isCoordinator(member)) return member || (await isBound(telegram.pool, message.chatId)) ? "Only linked coordinators can send notes." : null;
+  const parsed = parseRefAndText(args);
+  if (!parsed?.text) return "Use /note REF text, or reply to the order's status message.";
+  const { rows } = await telegram.pool.query<{ id: string }>("select id from orders where workspace_id = $1 and ref = $2", [member.workspaceId, parsed.ref]);
+  if (!rows[0]) return `No order ${parsed.ref} in this workspace.`;
+  const posted = await postNote(telegram.pool, member.workspaceId, rows[0].id, member.memberId, parsed.text);
+  return posted === "CLOSED" ? `${parsed.ref} is closed; notes go to open orders only.` : null;
+}
+
 const usage = {
   revise: "Use /revise REF SKU QTY, or /revise REF followed by one SKU x QTY line per item.",
   cancel: "Use /cancel REF reason.",
@@ -551,8 +600,8 @@ type DueRow = {
   chat_id: string;
   connection_id: string;
   attempts: number;
-  kind: "STATUS" | "EXCEPTION";
-  payload: { exceptionId?: string };
+  kind: "STATUS" | "EXCEPTION" | "REPLY";
+  payload: { exceptionId?: string; messageId?: string; force?: boolean };
   created_at: Date;
 };
 
@@ -571,6 +620,7 @@ export async function deliverOutbox(telegram: Telegram): Promise<number> {
   rows.sort((a, b) => a.created_at.getTime() - b.created_at.getTime() || (a.id < b.id ? -1 : 1));
   for (const row of rows) {
     if (row.kind === "EXCEPTION") await deliverException(telegram, row);
+    else if (row.kind === "REPLY") await deliverReply(telegram, row);
     else await deliverStatus(telegram, row);
   }
   return rows.length;
@@ -588,7 +638,7 @@ async function recoverExpiredLeases(pool: pg.Pool): Promise<void> {
 
 async function deliverStatus(telegram: Telegram, row: DueRow): Promise<void> {
   const state = await statusOf(telegram.pool, row.workspace_id, row.order_id, row.connection_id);
-  if (state.renderedVersion !== null && state.renderedVersion >= state.version) {
+  if (!row.payload.force && state.renderedVersion !== null && state.renderedVersion >= state.version) {
     // An earlier row already showed this state or a newer one.
     return settle(telegram.pool, row.id, "SENT", null);
   }
@@ -604,6 +654,22 @@ async function deliverStatus(telegram: Telegram, row: DueRow): Promise<void> {
       [row.workspace_id, row.connection_id, row.order_id, messageId, state.version],
     );
   });
+}
+
+// A picker's quick reply, posted under the order's status message so the
+// group sees which order it is about.
+async function deliverReply(telegram: Telegram, row: DueRow): Promise<void> {
+  const { rows } = await telegram.pool.query<{ body: string; picker: string; ref: string; status_message: string | null; source_message_id: string | null }>(
+    `select n.body, m.display_name as picker, o.ref, r.message_id as status_message, o.source_message_id
+     from order_messages n join members m on m.id = n.author_member_id join orders o on o.id = n.order_id
+     left join telegram_message_refs r on r.order_id = o.id and r.connection_id = $3 and r.purpose = 'STATUS'
+     where n.workspace_id = $1 and n.id = $2`,
+    [row.workspace_id, row.payload.messageId, row.connection_id],
+  );
+  const reply = rows[0]!;
+  const anchor = reply.status_message ?? reply.source_message_id;
+  const result = await telegram.api.sendMessage(row.chat_id, renderReply(reply.picker, reply.ref, reply.body), anchor ? Number(anchor) : undefined);
+  await finish(telegram.pool, row, result, null, async () => {});
 }
 
 const decisions: Record<string, (target: number) => string> = {
@@ -703,10 +769,13 @@ async function statusOf(pool: pg.Pool, workspaceId: string, orderId: string, con
   const order = await pool.query<{
     ref: string; revision: number; version: string; terminal: "COMPLETED" | "CANCELLED" | null; source_message_id: string | null;
     picker: string | null; tote_id: string | null; ack_revision: number | null; is_paused: boolean; is_cancel_requested: boolean; is_blocked: boolean;
+    note: "UNREAD" | "READ" | null;
   }>(
     `select o.ref, o.revision, o.version, o.terminal, o.source_message_id, m.display_name as picker, a.tote_id, a.ack_revision,
             o.is_paused, o.is_cancel_requested,
-            exists (select 1 from order_exceptions e where e.order_id = o.id and e.status = 'OPEN') as is_blocked
+            exists (select 1 from order_exceptions e where e.order_id = o.id and e.status = 'OPEN') as is_blocked,
+            (select case when n.read_at is null then 'UNREAD' else 'READ' end from order_messages n
+             where n.order_id = o.id and n.direction = 'TO_PICKER' order by n.created_at desc limit 1) as note
      from orders o
      left join assignments a on a.order_id = o.id and a.released_at is null
      left join members m on m.workspace_id = o.workspace_id and m.id = a.worker_id
@@ -734,6 +803,7 @@ async function statusOf(pool: pg.Pool, workspaceId: string, orderId: string, con
       picker: row.picker,
       toteId: row.tote_id,
       hold: holdOf(row),
+      note: row.note ?? ("NONE" as const),
       lines: lines.rows.map((line) => ({ sku: line.sku_snapshot, requested: line.requested_qty, picked: line.picked_qty })),
     },
   };

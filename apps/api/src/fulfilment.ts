@@ -35,6 +35,7 @@ import {
   type TaskKind,
 } from "@stow/order-engine";
 import type { OrderRequest } from "@stow/telegram/commands";
+import { unreadNote, type Note } from "./messages.ts";
 
 /** Role is a member's role in a workspace. */
 export type Role = "OWNER" | "COORDINATOR" | "PICKER" | "VIEWER";
@@ -257,6 +258,8 @@ export type WorkerView = {
   readonly changes: readonly TargetChange[];
   readonly decision: Decision | null;
   readonly lastCompleted: Completed | null;
+  /** The oldest unread coordinator note on the worker's current order. */
+  readonly note: Note | null;
 };
 
 /**
@@ -292,6 +295,7 @@ export async function workerView(pool: pg.Pool, workspaceId: string, workerId: s
       changes: order && order.assignment && (next.kind === "REVISION_ACK" || next.kind === "RESOLUTION_ACK") ? await changesSince(client, order, order.assignment.ackRevision) : [],
       decision: order && next.kind === "RESOLUTION_ACK" ? await decisionOn(client, workspaceId, next.exceptionId) : null,
       lastCompleted: current.rows[0] ? null : await lastCompleted(client, workspaceId, workerId),
+      note: current.rows[0] && orderId ? await unreadNote(client, orderId) : null,
     };
   }, "repeatable read");
 }

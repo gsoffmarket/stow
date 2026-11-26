@@ -12,6 +12,7 @@ import { z } from "zod";
 import { outstandingPick, outstandingReturn, type Order, type Task } from "@stow/order-engine";
 import { runCommand, workerView, type Command, type Role } from "./fulfilment.ts";
 import * as devices from "./devices.ts";
+import { markRead, quickReplies, sendReply } from "./messages.ts";
 import { memberships, sessionUser, startSession, verifyLaunchData } from "./identity.ts";
 
 export type HttpOptions = {
@@ -155,7 +156,26 @@ export function buildHttp(options: HttpOptions): FastifyInstance {
       changes: view.changes,
       decision: view.decision,
       lastCompleted: view.lastCompleted,
+      note: view.note,
+      quickReplies,
     });
+  });
+
+  app.post<{ Params: { wid: string; mid: string } }>("/v1/workspaces/:wid/messages/:mid/read", async (request, reply) => {
+    const device = await authenticate(request, reply, options.pool);
+    if (!device) return reply;
+    if (!uuid.safeParse(request.params.mid).success) return fail(reply, request, 404, "NOT_FOUND");
+    return (await markRead(options.pool, device, request.params.mid)) ? ok(reply, request, { read: true }) : fail(reply, request, 404, "NOT_FOUND");
+  });
+
+  app.post<{ Params: { wid: string } }>("/v1/workspaces/:wid/replies", async (request, reply) => {
+    const device = await authenticate(request, reply, options.pool);
+    if (!device) return reply;
+    const parsed = z.strictObject({ clientId: uuid, orderId: uuid, replyId: z.string().max(20) }).safeParse(request.body);
+    if (!parsed.success) return fail(reply, request, 400, "INVALID_INPUT");
+    const result = await sendReply(options.pool, device, parsed.data.orderId, parsed.data.clientId, parsed.data.replyId);
+    if (result === "SENT") return ok(reply, request, { sent: true, delivery: "PENDING" });
+    return fail(reply, request, result === "UNKNOWN_REPLY" ? 400 : 409, result);
   });
 
   app.post<{ Params: { wid: string } }>("/v1/workspaces/:wid/commands", async (request, reply) => {
@@ -310,6 +330,8 @@ const messages: Record<string, string> = {
   ROLE_REQUIRED: "your role cannot do this",
   PAIRING_EXPIRED: "that code has expired; the glasses will show a new one",
   NOT_APPROVED: "not approved yet",
+  NOT_ASSIGNED: "only the picker on this order can reply on it",
+  UNKNOWN_REPLY: "that quick reply does not exist",
   ALREADY_EXCHANGED: "this pairing has already been used",
   OPEN_EXCEPTION: "a problem is already reported on this order",
   UNKNOWN_SKU: "that SKU is not in the catalogue",

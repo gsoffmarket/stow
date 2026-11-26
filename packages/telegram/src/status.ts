@@ -12,6 +12,8 @@ export type OrderStatus = {
   readonly lines: readonly { readonly sku: string; readonly requested: number; readonly picked: number }[];
   /** What is holding the order up, if anything. */
   readonly hold: "NONE" | "AWAITING_PICKER_ACK" | "BLOCKED" | "CANCELLING" | "PAUSED";
+  /** The state of the latest coordinator note, shown so the group knows it landed. */
+  readonly note: "NONE" | "UNREAD" | "READ";
 };
 
 // Telegram rejects messages longer than 4096 characters; long orders are cut
@@ -35,7 +37,8 @@ export function renderStatus(status: OrderStatus): string {
       : status.picker
         ? `Progress: ${confirmed}/${requested} confirmed.`
         : `${status.lines.length} lines / ${requested} units. Awaiting picker.`;
-  const text = [`${status.ref} · ${phase} · rev ${status.revision}`, who, ...lines, footer].filter((part) => part !== "").join("\n");
+  const note = { NONE: "", UNREAD: "Note sent to the picker.", READ: "Note read by the picker." }[status.note];
+  const text = [`${status.ref} · ${phase} · rev ${status.revision}`, who, ...lines, footer, note].filter((part) => part !== "").join("\n");
   return text.length <= maxLength ? text : `${text.slice(0, maxLength - 20)}\n… (truncated)`;
 }
 
@@ -77,4 +80,9 @@ export function renderException(notice: ExceptionNotice): string {
  */
 export function reducedTarget(notice: Pick<ExceptionNotice, "picked" | "reportedQty" | "requested">): number {
   return Math.min(notice.requested, notice.picked + (notice.reportedQty ?? 0));
+}
+
+/** renderReply is how a picker's quick reply appears in the group. */
+export function renderReply(picker: string, ref: string, body: string): string {
+  return `${picker} · ${ref}: ${body}`;
 }
