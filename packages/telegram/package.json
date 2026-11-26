@@ -3,6 +3,8 @@
   "private": true,
   "type": "module",
   "exports": {
-    "./commands": "./src/commands.ts"
+    "./commands": "./src/commands.ts",
+    "./status": "./src/status.ts",
+    "./botapi": "./src/botapi.ts"
   }
 }
