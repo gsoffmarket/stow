@@ -171,3 +171,46 @@ describe("assigning from the console", () => {
     expect(byPicker.statusCode).toBe(404);
   });
 });
+
+describe("creating an order from the console", () => {
+  const create = (payload: object, headers = coordinatorHeaders) => app.inject({ method: "POST", url: `/v1/workspaces/${workspaceId}/orders`, headers, payload });
+
+  test("queues the order with catalogue snapshots and posts nothing to Telegram", async () => {
+    const created = await create({ commandId: randomUUID(), ref: "WEB-1", lines: [{ sku: "ts-blk-m", quantity: 2 }, { sku: "CP-WHT", quantity: 1 }] });
+    expect(created.statusCode).toBe(200);
+    const { orderId, ref } = created.json().data;
+    expect(ref).toBe("WEB-1");
+    const lines = await db.pool.query("select sku_snapshot as sku, name_snapshot as name, requested_qty as requested from order_lines where order_id = $1 order by creation_index", [orderId]);
+    expect(lines.rows).toEqual([{ sku: "TS-BLK-M", name: "Black T-shirt", requested: 2 }, { sku: "CP-WHT", name: "White cap", requested: 1 }]);
+    const source = await db.pool.query("select source_key like 'miniapp:%' as from_miniapp, connection_id from orders where id = $1", [orderId]);
+    expect(source.rows).toEqual([{ from_miniapp: true, connection_id: null }]);
+    const outbox = await db.pool.query("select count(*)::int as n from telegram_outbox where order_id = $1 and status <> 'NOT_REQUIRED'", [orderId]);
+    expect(outbox.rows).toEqual([{ n: 0 }]);
+  });
+
+  test("returns the same order for a retried submit and refuses the ID reused with other lines", async () => {
+    const commandId = randomUUID();
+    const first = await create({ commandId, ref: null, lines: [{ sku: "TS-BLK-M", quantity: 1 }] });
+    const again = await create({ commandId, ref: null, lines: [{ sku: "TS-BLK-M", quantity: 1 }] });
+    expect(again.json().data).toEqual(first.json().data);
+    const changed = await create({ commandId, ref: null, lines: [{ sku: "TS-BLK-M", quantity: 2 }] });
+    expect({ status: changed.statusCode, code: changed.json().error.code }).toEqual({ status: 409, code: "IDEMPOTENCY_CONFLICT" });
+  });
+
+  test.each([
+    { name: "an unknown SKU", lines: [{ sku: "NOPE", quantity: 1 }], status: 400, code: "UNKNOWN_SKU" },
+    { name: "the same SKU twice", lines: [{ sku: "CP-WHT", quantity: 1 }, { sku: "cp-wht", quantity: 1 }], status: 400, code: "INVALID_INPUT" },
+    { name: "a zero quantity", lines: [{ sku: "CP-WHT", quantity: 0 }], status: 400, code: "INVALID_INPUT" },
+    { name: "no lines", lines: [], status: 400, code: "INVALID_INPUT" },
+  ])("refuses $name", async ({ lines, status, code }) => {
+    const refused = await create({ commandId: randomUUID(), ref: null, lines });
+    expect({ status: refused.statusCode, code: refused.json().error.code }).toEqual({ status, code });
+  });
+
+  test("refuses a reference already in use, and a picker cannot create", async () => {
+    await create({ commandId: randomUUID(), ref: "WEB-9", lines: [{ sku: "CP-WHT", quantity: 1 }] });
+    const taken = await create({ commandId: randomUUID(), ref: "WEB-9", lines: [{ sku: "CP-WHT", quantity: 1 }] });
+    expect({ status: taken.statusCode, code: taken.json().error.code }).toEqual({ status: 409, code: "REF_TAKEN" });
+    expect((await create({ commandId: randomUUID(), ref: null, lines: [{ sku: "CP-WHT", quantity: 1 }] }, pickerHeaders)).statusCode).toBe(404);
+  });
+});

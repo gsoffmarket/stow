@@ -487,56 +487,91 @@ export type CreateResult =
 export async function createOrder(pool: pg.Pool, input: NewOrder): Promise<CreateResult> {
   return transaction(pool, async (client) => {
     await lockWorkspace(client, input.workspaceId);
-    const existing = await client.query<{ id: string; ref: string }>(
-      "select id, ref from orders where workspace_id = $1 and source_key = $2",
-      [input.workspaceId, input.sourceKey],
-    );
-    if (existing.rows[0]) {
-      return { ok: true, orderId: existing.rows[0].id, ref: existing.rows[0].ref, isNew: false };
-    }
-
-    const skus = input.request.lines.map((line) => line.sku);
-    const products = await client.query<{ id: string; normalized_sku: string; sku: string; name: string; bin: string | null; route_rank: number }>(
-      "select id, normalized_sku, sku, name, bin, route_rank from products where workspace_id = $1 and is_active and normalized_sku = any($2)",
-      [input.workspaceId, skus],
-    );
-    const bySku = new Map(products.rows.map((product) => [product.normalized_sku, product]));
-    const unknownSkus = skus.filter((sku) => !bySku.has(sku));
-    if (unknownSkus.length > 0) {
-      return { ok: false, unknownSkus };
-    }
-
-    const ref = input.request.ref ?? (await nextRef(client, input.workspaceId));
-    const taken = await client.query("select 1 from orders where workspace_id = $1 and ref = $2", [input.workspaceId, ref]);
-    if (taken.rowCount) {
-      return { ok: false, code: "REF_TAKEN" };
-    }
-    const order = await client.query<{ id: string }>(
-      `insert into orders (workspace_id, ref, source_key, connection_id, source_message_id, created_by)
-       values ($1, $2, $3, $4, $5, $6) returning id`,
-      [input.workspaceId, ref, input.sourceKey, input.connectionId, input.sourceMessageId, input.createdBy],
-    );
-    const orderId = order.rows[0]!.id;
-    for (const [index, line] of input.request.lines.entries()) {
-      const product = bySku.get(line.sku)!;
-      await client.query(
-        `insert into order_lines (workspace_id, order_id, product_id, sku_snapshot, name_snapshot, bin_snapshot,
-           route_rank_snapshot, creation_index, requested_qty) values ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-        [input.workspaceId, orderId, product.id, product.sku, product.name, product.bin, product.route_rank, index, line.quantity],
-      );
-    }
-    await appendEvent(client, input.workspaceId, {
-      orderId,
-      type: "ORDER_CREATED",
-      actorId: input.createdBy,
-      commandId: null,
-      revision: 1,
-      version: 1,
-      payload: { lines: input.request.lines.length },
-    });
-    await queueStatusUpdate(client, input.workspaceId, orderId, 1);
-    return { ok: true, orderId, ref, isNew: true };
+    return insertOrder(client, input);
   });
+}
+
+export type CreateCommandResult =
+  | { readonly status: 200; readonly body: { readonly orderId: string; readonly ref: string } }
+  | { readonly status: 400; readonly body: { readonly code: "UNKNOWN_SKU"; readonly skus: readonly string[] } }
+  | { readonly status: 403; readonly body: { readonly code: "ROLE_REQUIRED" } }
+  | { readonly status: 409; readonly body: { readonly code: "REF_TAKEN" | "IDEMPOTENCY_CONFLICT" } };
+
+/**
+ * createOrderOnce queues an order typed by a coordinator in the Mini App. The
+ * command ID makes a retried submit return the same order, and the same ID
+ * sent with different lines is refused rather than ignored. These orders
+ * come from no chat, so nothing is posted to Telegram.
+ */
+export async function createOrderOnce(pool: pg.Pool, actor: Actor, commandId: string, request: OrderRequest): Promise<CreateCommandResult> {
+  if (actor.role !== "OWNER" && actor.role !== "COORDINATOR") return { status: 403, body: { code: "ROLE_REQUIRED" } };
+  return transaction(pool, (client) =>
+    once(client, actor, commandId, hashCommand({ type: "CREATE_ORDER", request }), async (): Promise<CreateCommandResult> => {
+      const created = await insertOrder(client, {
+        workspaceId: actor.workspaceId,
+        createdBy: actor.memberId,
+        sourceKey: `miniapp:${actor.memberId}:${commandId}`,
+        connectionId: null,
+        sourceMessageId: null,
+        request,
+      });
+      if (created.ok) return { status: 200, body: { orderId: created.orderId, ref: created.ref } };
+      return "unknownSkus" in created ? { status: 400, body: { code: "UNKNOWN_SKU", skus: created.unknownSkus } } : { status: 409, body: { code: "REF_TAKEN" } };
+    }),
+  );
+}
+
+// Writes a new order inside the caller's transaction, which holds the workspace lock.
+async function insertOrder(client: pg.ClientBase, input: NewOrder): Promise<CreateResult> {
+  const existing = await client.query<{ id: string; ref: string }>(
+    "select id, ref from orders where workspace_id = $1 and source_key = $2",
+    [input.workspaceId, input.sourceKey],
+  );
+  if (existing.rows[0]) {
+    return { ok: true, orderId: existing.rows[0].id, ref: existing.rows[0].ref, isNew: false };
+  }
+
+  const skus = input.request.lines.map((line) => line.sku);
+  const products = await client.query<{ id: string; normalized_sku: string; sku: string; name: string; bin: string | null; route_rank: number }>(
+    "select id, normalized_sku, sku, name, bin, route_rank from products where workspace_id = $1 and is_active and normalized_sku = any($2)",
+    [input.workspaceId, skus],
+  );
+  const bySku = new Map(products.rows.map((product) => [product.normalized_sku, product]));
+  const unknownSkus = skus.filter((sku) => !bySku.has(sku));
+  if (unknownSkus.length > 0) {
+    return { ok: false, unknownSkus };
+  }
+
+  const ref = input.request.ref ?? (await nextRef(client, input.workspaceId));
+  const taken = await client.query("select 1 from orders where workspace_id = $1 and ref = $2", [input.workspaceId, ref]);
+  if (taken.rowCount) {
+    return { ok: false, code: "REF_TAKEN" };
+  }
+  const order = await client.query<{ id: string }>(
+    `insert into orders (workspace_id, ref, source_key, connection_id, source_message_id, created_by)
+     values ($1, $2, $3, $4, $5, $6) returning id`,
+    [input.workspaceId, ref, input.sourceKey, input.connectionId, input.sourceMessageId, input.createdBy],
+  );
+  const orderId = order.rows[0]!.id;
+  for (const [index, line] of input.request.lines.entries()) {
+    const product = bySku.get(line.sku)!;
+    await client.query(
+      `insert into order_lines (workspace_id, order_id, product_id, sku_snapshot, name_snapshot, bin_snapshot,
+         route_rank_snapshot, creation_index, requested_qty) values ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+      [input.workspaceId, orderId, product.id, product.sku, product.name, product.bin, product.route_rank, index, line.quantity],
+    );
+  }
+  await appendEvent(client, input.workspaceId, {
+    orderId,
+    type: "ORDER_CREATED",
+    actorId: input.createdBy,
+    commandId: null,
+    revision: 1,
+    version: 1,
+    payload: { lines: input.request.lines.length },
+  });
+  await queueStatusUpdate(client, input.workspaceId, orderId, 1);
+  return { ok: true, orderId, ref, isNew: true };
 }
 
 async function nextRef(client: pg.ClientBase, workspaceId: string): Promise<string> {

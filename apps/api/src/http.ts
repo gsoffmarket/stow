@@ -9,8 +9,8 @@ import { createHash, createHmac, randomUUID, timingSafeEqual } from "node:crypto
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
 import type pg from "pg";
 import { z } from "zod";
-import { outstandingPick, outstandingReturn, type Order, type Task } from "@stow/order-engine";
-import { runCommand, startBatch, workerView, type Command, type Role } from "./fulfilment.ts";
+import { limits as orderLimits, outstandingPick, outstandingReturn, type Order, type Task } from "@stow/order-engine";
+import { createOrderOnce, runCommand, startBatch, workerView, type Command, type Role } from "./fulfilment.ts";
 import * as devices from "./devices.ts";
 import { markRead, postNote, quickReplies, sendReply } from "./messages.ts";
 import { listOrders, orderDetail, pickers } from "./console.ts";
@@ -77,6 +77,18 @@ const consoleCommandBody = z.discriminatedUnion("type", [
     }),
   }),
 ]);
+
+// The same limits as /order in Telegram: one line per SKU, bounded quantities.
+const newOrderBody = z.strictObject({
+  commandId: uuid,
+  ref: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,39}$/).nullable(),
+  lines: z
+    .array(z.strictObject({ sku: z.string().trim().min(1).max(64).transform((sku) => sku.normalize("NFKC").toUpperCase()), quantity: z.number().int().min(1).max(orderLimits.unitsPerLine) }))
+    .min(1)
+    .max(orderLimits.lines)
+    .refine((lines) => new Set(lines.map((line) => line.sku)).size === lines.length, "each SKU once")
+    .refine((lines) => lines.reduce((sum, line) => sum + line.quantity, 0) <= orderLimits.unitsPerOrder, "too many units"),
+});
 
 const commandBody = z.discriminatedUnion("type", [
   z.strictObject({ commandId: uuid, type: z.literal("CLAIM_ORDER"), ...expected, payload: z.strictObject({ toteId: z.string().min(1).max(16).nullable() }) }),
@@ -217,6 +229,17 @@ export function buildHttp(options: HttpOptions): FastifyInstance {
     if (!actor) return reply;
     const detail = uuid.safeParse(request.params.oid).success ? await orderDetail(options.pool, actor.workspaceId, request.params.oid) : null;
     return detail ? ok(reply, request, detail) : fail(reply, request, 404, "NOT_FOUND");
+  });
+
+  app.post<{ Params: { wid: string } }>("/v1/workspaces/:wid/orders", async (request, reply) => {
+    const actor = await coordinator(request, reply, options.pool);
+    if (!actor) return reply;
+    if (!allow(request, reply, `create:${actor.memberId}`, limits.commands)) return reply;
+    const parsed = newOrderBody.safeParse(request.body);
+    if (!parsed.success) return fail(reply, request, 400, "INVALID_INPUT");
+    const result = await createOrderOnce(options.pool, actor, parsed.data.commandId, { ref: parsed.data.ref, lines: parsed.data.lines });
+    if (result.status !== 200) return fail(reply, request, result.status, result.body.code);
+    return ok(reply, request, result.body);
   });
 
   app.get<{ Params: { wid: string } }>("/v1/workspaces/:wid/pickers", async (request, reply) => {
@@ -506,6 +529,7 @@ const messages: Record<string, string> = {
   ASSIGNMENT_CONFLICT: "this order belongs to someone else",
   QUANTITY_OUT_OF_RANGE: "the quantity is outside what this task needs",
   ROLE_REQUIRED: "your role cannot do this",
+  REF_TAKEN: "another order already uses that reference",
   NOT_A_PICKER: "orders can only be assigned to pickers in this workspace",
   BATCH_SIZE: "a batch holds 2 to 5 different orders",
   PAIRING_EXPIRED: "that code has expired; the glasses will show a new one",
