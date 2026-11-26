@@ -40,6 +40,7 @@ async function newOrder(ws: Workspace, sourceKey = `telegram:${randomUUID()}`) {
     createdBy: ws.coordinator,
     sourceKey,
     connectionId: ws.connectionId,
+    sourceMessageId: null,
     request: { ref: null, lines: [{ sku: "TS-BLK-M", quantity: 3 }, { sku: "CP-WHT", quantity: 2 }] },
   });
   if (!created.ok || !("orderId" in created)) throw new Error(`createOrder: ${JSON.stringify(created)}`);
@@ -83,6 +84,7 @@ describe("createOrder", () => {
       createdBy: ws.coordinator,
       sourceKey: "telegram:unknown",
       connectionId: ws.connectionId,
+    sourceMessageId: null,
       request: { ref: null, lines: [{ sku: "TS-BLK-M", quantity: 1 }, { sku: "NOPE", quantity: 1 }] },
     });
     expect(got).toEqual({ ok: false, unknownSkus: ["NOPE"] });

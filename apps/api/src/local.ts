@@ -3,6 +3,7 @@
 //
 //   node src/local.ts setup   migrate, seed the demo workspace, issue a glasses token
 //   node src/local.ts order   queue a test order without Telegram
+//   node src/local.ts bind    print a one-time code to bind a Telegram group
 //
 // The demo catalogue is synthetic: made-up SKUs with made-up bins.
 
@@ -13,6 +14,7 @@ import pg from "pg";
 import { migrate } from "./db/migrate.ts";
 import { createOrder } from "./fulfilment.ts";
 import { hashToken } from "./http.ts";
+import { hashCode } from "./telegram.ts";
 
 const repoRoot = join(import.meta.dirname, "../../..");
 const envFile = join(repoRoot, ".env.local");
@@ -90,18 +92,32 @@ async function testOrder(client: pg.ClientBase, pool: pg.Pool): Promise<void> {
     createdBy: ownerId,
     sourceKey: `local:${randomBytes(8).toString("hex")}`,
     connectionId: null,
+    sourceMessageId: null,
     request: { ref: null, lines: [{ sku: "TS-BLK-M", quantity: 3 }, { sku: "CP-WHT", quantity: 2 }, { sku: "TB-NAT", quantity: 1 }] },
   });
   console.log(JSON.stringify({ msg: "local test order queued", ...created }));
 }
 
+// The code goes to the owner, so sending it in a group links the owner's
+// Telegram account as the coordinator for that group.
+async function bindCode(client: pg.ClientBase): Promise<void> {
+  const { workspaceId, ownerId } = await demoWorkspace(client);
+  const code = randomBytes(5).toString("hex").toUpperCase();
+  await client.query(
+    "insert into telegram_bind_challenges (workspace_id, member_id, code_hash, expires_at) values ($1, $2, $3, now() + interval '10 minutes')",
+    [workspaceId, ownerId, hashCode(code)],
+  );
+  console.log(`Send this in your test group within 10 minutes:\n\n/stow_bind ${code}\n`);
+}
+
 const command = process.argv[2];
-if (command !== "setup" && command !== "order") throw new Error("usage: node src/local.ts setup|order");
+if (command !== "setup" && command !== "order" && command !== "bind") throw new Error("usage: node src/local.ts setup|order|bind");
 await ensureEnvFile();
 const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL, max: 2 });
 const client = await pool.connect();
 try {
   if (command === "setup") await setup(client);
+  else if (command === "bind") await bindCode(client);
   else await testOrder(client, pool);
 } finally {
   client.release();
