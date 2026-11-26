@@ -23,7 +23,8 @@ export default function Landing() {
       <nav className="mx-auto flex max-w-[1120px] items-center gap-2.5 px-4 py-5 sm:px-8">
         <Mark />
         <span className="text-[15px] font-semibold tracking-[0.01em]">Stow</span>
-        <a href={repository} className="ml-auto text-[14px] text-text-secondary hover:text-text-primary">{text.source}</a>
+        <a href="/docs" className="ml-auto text-[14px] text-text-secondary hover:text-text-primary">{copy.docs.nav}</a>
+        <a href={repository} className="ml-4 text-[14px] text-text-secondary hover:text-text-primary">{text.source}</a>
       </nav>
       <Hero />
       <Loop />
@@ -73,8 +74,8 @@ function Hero() {
               {text.openBot(botUsername)}
             </a>
           )}
-          <a href={repository} className="flex min-h-11 items-center rounded-[var(--radius-control)] border border-border-strong px-5 text-[15px] font-medium">
-            {text.source}
+          <a href="/docs" className="flex min-h-11 items-center rounded-[var(--radius-control)] border border-border-strong px-5 text-[15px] font-medium">
+            {text.readDocs}
           </a>
         </div>
       </div>

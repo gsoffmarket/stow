@@ -2,7 +2,8 @@
 // this person can do. Opening it with ?startapp=pair goes straight to pairing,
 // and ?startapp=order_<id> straight to that order.
 // Opened in a browser instead of Telegram, the same address is Stow's public
-// landing page, loaded separately so the Mini App stays small.
+// landing page, or at /docs the guide, each loaded separately so the Mini App
+// stays small.
 
 import { lazy, Suspense, useEffect, useState } from "react";
 import { signIn, type Session } from "./api.ts";
@@ -22,6 +23,7 @@ import { launchData, openBot, startOrder, startParam } from "./telegram.ts";
 import { Card, GhostButton, Mark, Page, PrimaryButton } from "./ui.tsx";
 
 const Landing = lazy(() => import("./Landing.tsx"));
+const Docs = lazy(() => import("./Docs.tsx"));
 
 type State = { kind: "outside" } | { kind: "signing-in" } | { kind: "failed" } | { kind: "ready"; session: Session };
 
@@ -45,7 +47,7 @@ export function App() {
   if (state.kind === "outside") {
     return (
       <Suspense fallback={null}>
-        <Landing />
+        {location.pathname === "/docs" ? <Docs /> : <Landing />}
       </Suspense>
     );
   }

@@ -38,7 +38,7 @@ Telegram group ◀── edit status message ◀── outbox ◀┘
 | `apps/api/src/local.ts` | Local-only setup, test order and bind-code commands. |
 | `apps/glasses/src/screens.ts` | Pure choice of what the glasses show for a snapshot and link state. |
 | `apps/glasses/src/main.ts` | Even Hub bridge glue: render, input, pairing, polling, command sending. |
-| `apps/companion/src/` | Telegram Mini App: sign-in, pairing approval, coordinator console. |
+| `apps/companion/src/` | Telegram Mini App: sign-in, pairing approval, coordinator console. Opened in a browser, the same build serves the landing page and the user guide at `/docs`. |
 | `packages/ui-tokens/tokens.css` | Design tokens shared by the Mini App. |
 | `deploy/` | Docker Compose, Caddy and the image build for one VPS. |
 | `db/migrations/` | Forward-only SQL migrations. |
