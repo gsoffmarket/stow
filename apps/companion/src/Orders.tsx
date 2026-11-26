@@ -6,6 +6,7 @@ import { AnimatePresence, m } from "motion/react";
 import { useEffect, useState } from "react";
 import { listOrders, type OrderRow, type View } from "./api.ts";
 import { copy } from "./copy.ts";
+import { NewOrder } from "./NewOrder.tsx";
 import { usePolling } from "./polling.ts";
 
 type Props = { token: string; workspaceId: string; onOpen: (orderId: string) => void; onCatalogue: () => void };
@@ -17,6 +18,7 @@ export function Orders({ token, workspaceId, onOpen, onCatalogue }: Props) {
   const [view, setView] = useState<View>("active");
   const { data, isLive } = usePolling(() => listOrders(token, workspaceId, view), [view], 3000);
   const [needsYou, setNeedsYou] = useState(0);
+  const [isCreating, setIsCreating] = useState(false);
   const orders = data?.orders ?? null;
 
   useEffect(() => {
@@ -30,6 +32,9 @@ export function Orders({ token, workspaceId, onOpen, onCatalogue }: Props) {
         <span className="mr-auto"><LiveDot isLive={isLive} /></span>
         <button onClick={onCatalogue} className="min-h-10 rounded-[var(--radius-control)] border border-border-strong px-3 text-[13px] font-medium">
           {copy.catalogue.open}
+        </button>
+        <button onClick={() => setIsCreating(true)} className="min-h-10 rounded-[var(--radius-control)] bg-action px-3 text-[13px] font-medium text-action-text">
+          {copy.newOrder.open}
         </button>
       </div>
       <div role="tablist" aria-label={copy.orders.title} className="grid grid-cols-3 gap-1 rounded-[10px] bg-surface-recessed p-1">
@@ -59,6 +64,9 @@ export function Orders({ token, workspaceId, onOpen, onCatalogue }: Props) {
           ))}
         </AnimatePresence>
       </ul>
+      <AnimatePresence>
+        {isCreating && <NewOrder token={token} workspaceId={workspaceId} onClose={() => setIsCreating(false)} onCreated={onOpen} />}
+      </AnimatePresence>
     </section>
   );
 }
