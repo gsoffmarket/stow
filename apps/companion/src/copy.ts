@@ -96,10 +96,10 @@ export const copy = {
         title: "Import your catalogue",
         body: [
           "Orders can only use SKUs Stow knows. Open Stow, tap Catalogue, and paste or choose a CSV file with a header row.",
-          "sku and name are required. bin is where the item lives, shown to the picker. route_rank is a whole number for the walking order: lower numbers are picked first.",
+          "sku and name are required. bin is where the item lives, shown to the picker. route_rank is a whole number for the walking order: lower numbers are picked first. aliases are other names coordinators may type instead of the SKU, separated by semicolons.",
           "Stow checks the file and shows what is new and what changes before anything is saved. Importing again updates products by SKU.",
         ],
-        code: "sku,name,bin,route_rank\nTS-BLK-M,Black T-shirt (M),A-03,1\nCP-WHT,White cap,B-11,2\nTB-NAT,Natural tote bag,C-02,3",
+        code: "sku,name,bin,route_rank,aliases\nTS-BLK-M,Black T-shirt (M),A-03,1,black tee\nCP-WHT,White cap,B-11,2,white cap; cap\nTB-NAT,Natural tote bag,C-02,3,tote",
       },
       {
         id: "group",
@@ -131,7 +131,7 @@ export const copy = {
         id: "order",
         title: "Send an order",
         body: [
-          "In the group, send /order with an optional reference on the same line, then one line per item: the SKU, an x, and the quantity.",
+          "In the group, send /order with an optional reference on the same line, then one line per item: the SKU or one of its aliases, an x, and the quantity.",
           "The bot posts a status message that updates itself as the picker works, with an Open in Stow button. Coordinators can also create orders with New order in the Mini App.",
           "New orders wait for a picker. Use Assign picker on the order's page to give it to someone; it then appears on their glasses.",
         ],
@@ -170,7 +170,8 @@ export const copy = {
       id: "troubleshooting",
       title: "Troubleshooting",
       rows: [
-        ["Order not created. Unknown SKU", "the SKU is not in the catalogue. Check the spelling or import it first."],
+        ["\"…\" is not in the catalogue", "no product has that SKU or alias. Check the spelling, or import the product or alias first."],
+        ["\"…\" could be A or B", "several products share that alias. Use the SKU on that line instead."],
         ["write it as SKU x QTY", "put each item on its own line under /order, like TS-BLK-M x 2."],
         ["Only linked coordinators can send orders", "the sender is not a coordinator in this workspace. The owner sends them an /invite coordinator link."],
         ["The bot ignores /order", "the group is not connected. The owner sends /stow_connect in the group."],
@@ -265,7 +266,7 @@ export const copy = {
       {
         title: "In the work group",
         rows: [
-          ["/order REF", "then one line per item: SKU x QTY. The reference is optional."],
+          ["/order REF", "then one line per item: SKU x QTY, or a product's alias instead of the SKU. The reference is optional."],
           ["/revise REF SKU QTY", "sets a new target; 0 removes it. Confirm or Discard the preview."],
           ["/cancel REF reason", "cancels an order. Anything already picked is returned first."],
           ["/resolve REF SKU QTY", "substitutes a SKU for an item the picker reported."],
@@ -458,7 +459,7 @@ export const copy = {
     empty: "No products yet. Import a CSV to add them.",
     count: (n: number) => `${n} ${n === 1 ? "product" : "products"}`,
     importTitle: "Import CSV",
-    importHint: "Columns: sku, name, and optionally bin and route_rank. One product per row.",
+    importHint: "Columns: sku, name, and optionally bin, route_rank and aliases (other names, separated by semicolons). One product per row.",
     paste: "CSV",
     file: "Or choose a file",
     preview: "Check file",

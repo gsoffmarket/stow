@@ -22,15 +22,17 @@ function order(args: string, ...body: string[]): Command {
 }
 
 describe("parseOrder", () => {
-  test("reads lines with x, X or × and upper-cases SKUs", () => {
-    expect(parseOrder(order("ST-1042", "ts-blk-m x 3", "CP-WHT X 2", "TB-NAT×1"))).toEqual({
+  test("reads lines with x, X or ×, keeping each item as typed", () => {
+    expect(parseOrder(order("ST-1042", "ts-blk-m x 3", "CP-WHT X 2", "TB-NAT×1", "black  tee x 4", "box x 5"))).toEqual({
       ok: true,
       order: {
         ref: "ST-1042",
         lines: [
-          { sku: "TS-BLK-M", quantity: 3 },
-          { sku: "CP-WHT", quantity: 2 },
-          { sku: "TB-NAT", quantity: 1 },
+          { item: "ts-blk-m", quantity: 3 },
+          { item: "CP-WHT", quantity: 2 },
+          { item: "TB-NAT", quantity: 1 },
+          { item: "black tee", quantity: 4 },
+          { item: "box", quantity: 5 },
         ],
       },
     });
@@ -47,6 +49,7 @@ describe("parseOrder", () => {
     { name: "zero units", body: ["A x 0"], code: "QUANTITY_OUT_OF_RANGE" },
     { name: "more than 10,000 units", body: ["A x 10001"], code: "QUANTITY_OUT_OF_RANGE" },
     { name: "a repeated SKU", body: ["A x 1", "a x 2"], code: "DUPLICATE_SKU" },
+    { name: "a repeated name, spaced differently", body: ["Black Tee x 1", "black  tee x 2"], code: "DUPLICATE_SKU" },
     { name: "no lines", body: [], code: "NO_LINES" },
   ])("rejects $name", ({ body, code }) => {
     const got = parseOrder(order("", ...body));
