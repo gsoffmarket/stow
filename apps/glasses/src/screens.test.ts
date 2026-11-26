@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { moreScreen, pairingScreen, screenFor, type Snapshot } from "./screens.ts";
+import { clampQuantity, moreScreen, pairingScreen, quantityScreen, screenFor, type Snapshot } from "./screens.ts";
 
 const order = { id: "o1", ref: "ST-1042", revision: 2, version: "7", isCancelRequested: false, toteId: "A" };
 const quickReplies = [{ id: "ON_IT", text: "On it" }, { id: "FOUND", text: "Found them" }];
@@ -26,14 +26,14 @@ describe("tasks", () => {
       body: "BIN A-03\nBLACK T-SHIRT\nTS-BLK-M\n\nPICK × 3",
       primary: { type: "CONFIRM", quantity: 3 },
     });
-    expect(screen.options.map((option) => option.label)).toEqual(["REPORT SHORTAGE", "DAMAGED ITEM", "WRONG LOCATION", "MESSAGE GROUP", "PAUSE ORDER"]);
+    expect(screen.options.map((option) => option.label)).toEqual(["PICK FEWER", "REPORT SHORTAGE", "DAMAGED ITEM", "WRONG LOCATION", "MESSAGE GROUP", "PAUSE ORDER"]);
   });
 
   test("a return says RETURN, never PICK -1, and asks for the actual return", () => {
     const screen = screenFor(snapshot(task("RETURN")), "online");
     expect(screen.body).toBe("RETURN × 3\nBLACK T-SHIRT\nBIN A-03 · TS-BLK-M");
     expect(screen.footer).toBe("TAP TO CONFIRM ACTUAL RETURN");
-    expect(screen.options[0]).toEqual({ label: "CANNOT RETURN", action: { type: "REPORT", report: "RETURN_BLOCKED" } });
+    expect(screen.options[1]).toEqual({ label: "CANNOT RETURN", action: { type: "REPORT", report: "RETURN_BLOCKED" } });
   });
 
   test("a return during cancellation says why", () => {
@@ -121,14 +121,14 @@ describe("the More screen", () => {
   test("lists the options with a cursor, ending in Back, and tap chooses the one under it", () => {
     expect(moreScreen(base.options, "ST-1042", 0)).toMatchObject({
       header: "ST-1042   MORE",
-      body: "> REPORT SHORTAGE\n  DAMAGED ITEM\n  WRONG LOCATION\n  MESSAGE GROUP\n  PAUSE ORDER\n  BACK",
-      primary: { type: "REPORT", report: "SHORTAGE" },
+      body: "> PICK FEWER\n  REPORT SHORTAGE\n  DAMAGED ITEM\n  WRONG LOCATION\n  MESSAGE GROUP\n  PAUSE ORDER\n  BACK",
+      primary: { type: "CHOOSE_QUANTITY" },
     });
-    expect(moreScreen(base.options, "ST-1042", 5).primary).toEqual({ type: "BACK" });
+    expect(moreScreen(base.options, "ST-1042", 6).primary).toEqual({ type: "BACK" });
   });
 
   test("the cursor wraps both ways", () => {
-    expect(moreScreen(base.options, "ST-1042", 6).primary).toEqual({ type: "REPORT", report: "SHORTAGE" });
+    expect(moreScreen(base.options, "ST-1042", 7).primary).toEqual({ type: "CHOOSE_QUANTITY" });
     expect(moreScreen(base.options, "ST-1042", -1).primary).toEqual({ type: "BACK" });
   });
 });
@@ -170,5 +170,28 @@ describe("coordinator notes", () => {
   test("a note never covers a save in progress or an unknown outcome", () => {
     expect(screenFor(withNote, "saving").body).toMatch(/^SAVING/);
     expect(screenFor(withNote, "uncertain").body).toMatch(/^OUTCOME UNKNOWN/);
+  });
+});
+
+describe("fewer than asked", () => {
+  test("a chosen quantity is confirmed as exactly that, with what was asked alongside", () => {
+    expect(quantityScreen(snapshot(task("PICK")), 2)).toMatchObject({
+      header: "ST-1042   TOTE A   HOW MANY?",
+      body: "PICK × 2\nof 3 asked\nBLACK T-SHIRT\nTS-BLK-M",
+      primary: { type: "CONFIRM", quantity: 2 },
+    });
+  });
+
+  test("zero is cancel, never a confirmation", () => {
+    expect(quantityScreen(snapshot(task("RETURN")), 0)).toMatchObject({ body: "CANCEL\nRETURN × 3 stays as asked.", primary: { type: "BACK" } });
+  });
+
+  test("the choice stays between cancel and what was asked", () => {
+    expect([clampQuantity(-1, 3), clampQuantity(4, 3), clampQuantity(2, 3)]).toEqual([0, 3, 2]);
+  });
+
+  test("a single unit has nothing fewer to choose", () => {
+    const one = snapshot({ ...(task("PICK") as Extract<Snapshot["plan"], { kind: "TASK" }>), task: { ...(task("PICK") as Extract<Snapshot["plan"], { kind: "TASK" }>).task, quantity: 1 } });
+    expect(screenFor(one, "online").options.map((option) => option.label)).not.toContain("PICK FEWER");
   });
 });
