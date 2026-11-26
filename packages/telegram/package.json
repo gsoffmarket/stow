@@ -1,0 +1,8 @@
+{
+  "name": "@stow/telegram",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./commands": "./src/commands.ts"
+  }
+}
