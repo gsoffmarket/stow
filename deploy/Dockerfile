@@ -19,6 +19,8 @@ COPY . .
 # The frontends are served from the same origin as the API, so they call
 # relative /v1 URLs and need no API address baked in.
 ENV VITE_STOW_API_URL=""
+ARG STOW_BOT_USERNAME=""
+ENV VITE_STOW_BOT_USERNAME=$STOW_BOT_USERNAME
 RUN pnpm --filter @stow/companion build && pnpm --filter @stow/glasses build
 
 FROM deps AS api
