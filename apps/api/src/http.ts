@@ -14,6 +14,7 @@ import { runCommand, workerView, type Command, type Role } from "./fulfilment.ts
 import * as devices from "./devices.ts";
 import { markRead, postNote, quickReplies, sendReply } from "./messages.ts";
 import { listOrders, orderDetail } from "./console.ts";
+import * as catalogue from "./catalogue.ts";
 import { Limiter, limits, type Limit } from "./limits.ts";
 import { memberships, sessionUser, startSession, verifyLaunchData } from "./identity.ts";
 import type { Actor } from "./fulfilment.ts";
@@ -224,6 +225,39 @@ export function buildHttp(options: HttpOptions): FastifyInstance {
     if (!parsed.success || !uuid.safeParse(request.params.oid).success) return fail(reply, request, 400, "INVALID_INPUT");
     const posted = await postNote(options.pool, actor.workspaceId, request.params.oid, actor.memberId, parsed.data.body);
     return posted === "POSTED" ? ok(reply, request, { posted: true }) : fail(reply, request, 409, "TERMINAL_ORDER");
+  });
+
+  // Catalogue import: preview first, then commit the same text all or nothing.
+  const importBody = z.strictObject({ csv: z.string().min(1).max(catalogue.importLimits.bytes), allowUpdates: z.boolean().default(false) });
+  const importLimit_bytes = catalogue.importLimits.bytes + 64 * 1024;
+
+  app.get<{ Params: { wid: string } }>("/v1/workspaces/:wid/catalogue", async (request, reply) => {
+    const actor = await coordinator(request, reply, options.pool);
+    if (!actor) return reply;
+    return ok(reply, request, { products: await catalogue.products(options.pool, actor.workspaceId) });
+  });
+
+  app.post<{ Params: { wid: string } }>("/v1/workspaces/:wid/catalogue/preview", { bodyLimit: importLimit_bytes }, async (request, reply) => {
+    const actor = await coordinator(request, reply, options.pool);
+    if (!actor) return reply;
+    if (!allow(request, reply, `import:${actor.memberId}`, limits.imports)) return reply;
+    const parsed = importBody.safeParse(request.body);
+    if (!parsed.success) return fail(reply, request, 400, "INVALID_INPUT");
+    return ok(reply, request, await catalogue.preview(options.pool, actor.workspaceId, parsed.data.csv));
+  });
+
+  app.post<{ Params: { wid: string } }>("/v1/workspaces/:wid/catalogue/commit", { bodyLimit: importLimit_bytes }, async (request, reply) => {
+    const actor = await coordinator(request, reply, options.pool);
+    if (!actor) return reply;
+    if (!allow(request, reply, `import:${actor.memberId}`, limits.imports)) return reply;
+    const parsed = importBody.safeParse(request.body);
+    if (!parsed.success) return fail(reply, request, 400, "INVALID_INPUT");
+    const result = await catalogue.commit(options.pool, actor.workspaceId, parsed.data.csv, parsed.data.allowUpdates);
+    if (result.ok) return ok(reply, request, result);
+    return reply.code(422).send({
+      error: { code: result.code, message: messages[result.code] ?? result.code, retryable: false, details: "errors" in result ? { errors: result.errors } : { skus: result.skus } },
+      meta: meta(request),
+    });
   });
 
   app.post<{ Params: { wid: string } }>("/v1/workspaces/:wid/console/commands", async (request, reply) => {
@@ -456,6 +490,8 @@ const messages: Record<string, string> = {
   UNKNOWN_SKU: "that SKU is not in the catalogue",
   NO_CHANGE: "nothing changed",
   RATE_LIMITED: "too many requests; wait and try again",
+  IMPORT_ERRORS: "the file has errors; fix the rows listed and try again",
+  UPDATES_NOT_ALLOWED: "the file changes existing products; confirm updates to apply it",
   DUPLICATE_SKU: "that SKU is already in the order",
   ORDER_TOO_LARGE: "the order is over the size limit",
   IDEMPOTENCY_CONFLICT: "this command ID was already used for a different request",
