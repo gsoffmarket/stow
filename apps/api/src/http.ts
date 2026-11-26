@@ -10,7 +10,7 @@ import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest }
 import type pg from "pg";
 import { z } from "zod";
 import { outstandingPick, outstandingReturn, type Order, type Task } from "@stow/order-engine";
-import { runPickerCommand, workerView, type PickerCommand } from "./fulfilment.ts";
+import { runCommand, workerView, type Command, type Role } from "./fulfilment.ts";
 
 export type HttpOptions = {
   readonly pool: pg.Pool;
@@ -19,7 +19,7 @@ export type HttpOptions = {
   readonly logger: boolean;
 };
 
-type Device = { readonly workspaceId: string; readonly memberId: string };
+type Device = { readonly workspaceId: string; readonly memberId: string; readonly role: Role };
 
 const uuid = z.uuid();
 const counter = z.string().regex(/^[0-9]{1,18}$/).transform(Number);
@@ -37,7 +37,17 @@ const commandBody = z.discriminatedUnion("type", [
       quantity: z.number().int().min(1).max(10_000),
     }),
   }),
-  z.strictObject({ commandId: uuid, type: z.literal("COMPLETE_ORDER"), ...expected, payload: z.strictObject({}) }),
+  z.strictObject({ commandId: uuid, type: z.enum(["COMPLETE_ORDER", "ACK_REVISION", "PAUSE_ORDER", "RESUME_ORDER", "CLOSE_CANCELLED"]), ...expected, payload: z.strictObject({}) }),
+  z.strictObject({ commandId: uuid, type: z.literal("ACK_RESOLUTION"), ...expected, payload: z.strictObject({ exceptionId: uuid }) }),
+  z.strictObject({
+    commandId: uuid,
+    type: z.literal("REPORT_EXCEPTION"),
+    ...expected,
+    payload: z.strictObject({
+      type: z.enum(["SHORTAGE", "DAMAGED", "LOCATION_MISMATCH", "RETURN_BLOCKED", "OTHER"]),
+      reportedQty: z.number().int().min(0).max(10_000).nullable(),
+    }),
+  }),
 ]);
 
 /** buildHttp assembles the API without listening, so tests can inject requests. */
@@ -93,19 +103,29 @@ export function buildHttp(options: HttpOptions): FastifyInstance {
     if (!parsed.success) return fail(reply, request, 400, "INVALID_INPUT");
     const body = parsed.data;
     const base = { orderId: body.orderId, revision: body.expectedRevision, version: body.expectedVersion };
-    let command: PickerCommand;
-    if (body.type === "CONFIRM_TASK") {
-      const shown = { orderId: body.orderId, lineId: body.payload.lineId, kind: body.payload.kind, revision: body.expectedRevision, version: body.expectedVersion };
-      if (!verifyTask(options.taskTokenSecret, device.memberId, shown, body.payload.taskToken)) {
-        return fail(reply, request, 409, "TASK_CHANGED");
+    let command: Command;
+    switch (body.type) {
+      case "CONFIRM_TASK": {
+        const shown = { orderId: body.orderId, lineId: body.payload.lineId, kind: body.payload.kind, revision: body.expectedRevision, version: body.expectedVersion };
+        if (!verifyTask(options.taskTokenSecret, device.memberId, shown, body.payload.taskToken)) {
+          return fail(reply, request, 409, "TASK_CHANGED");
+        }
+        command = { type: "CONFIRM_TASK", ...base, kind: body.payload.kind, lineId: body.payload.lineId, quantity: body.payload.quantity };
+        break;
       }
-      command = { type: "CONFIRM_TASK", ...base, kind: body.payload.kind, lineId: body.payload.lineId, quantity: body.payload.quantity };
-    } else if (body.type === "CLAIM_ORDER") {
-      command = { type: "CLAIM_ORDER", ...base, toteId: body.payload.toteId };
-    } else {
-      command = { type: "COMPLETE_ORDER", ...base };
+      case "CLAIM_ORDER":
+        command = { type: "CLAIM_ORDER", ...base, toteId: body.payload.toteId };
+        break;
+      case "ACK_RESOLUTION":
+        command = { type: "ACK_RESOLUTION", ...base, exceptionId: body.payload.exceptionId };
+        break;
+      case "REPORT_EXCEPTION":
+        command = { type: "REPORT_EXCEPTION", ...base, exceptionType: body.payload.type, reportedQty: body.payload.reportedQty };
+        break;
+      default:
+        command = { type: body.type, ...base };
     }
-    const result = await runPickerCommand(options.pool, { workspaceId: device.workspaceId, workerId: device.memberId }, body.commandId, command);
+    const result = await runCommand(options.pool, device, body.commandId, command);
     if (result.status !== 200) return fail(reply, request, result.status, result.body.code);
     // Telegram delivery is asynchronous; the physical action is already saved.
     return ok(reply, request, { commandId: body.commandId, ...result.body, delivery: "PENDING" });
@@ -124,8 +144,8 @@ async function authenticate(request: FastifyRequest<{ Params: { wid: string } }>
     fail(reply, request, 401, "AUTH_REQUIRED");
     return null;
   }
-  const { rows } = await pool.query<{ workspace_id: string; member_id: string }>(
-    `select d.workspace_id, d.member_id from device_tokens d join members m on m.workspace_id = d.workspace_id and m.id = d.member_id
+  const { rows } = await pool.query<{ workspace_id: string; member_id: string; role: Role }>(
+    `select d.workspace_id, d.member_id, m.role from device_tokens d join members m on m.workspace_id = d.workspace_id and m.id = d.member_id
      where d.token_hash = $1 and d.revoked_at is null and d.expires_at > now() and m.role in ('PICKER', 'OWNER')`,
     [hashToken(token)],
   );
@@ -138,7 +158,7 @@ async function authenticate(request: FastifyRequest<{ Params: { wid: string } }>
     fail(reply, request, 404, "NOT_FOUND");
     return null;
   }
-  return { workspaceId: device.workspace_id, memberId: device.member_id };
+  return { workspaceId: device.workspace_id, memberId: device.member_id, role: device.role };
 }
 
 /** hashToken is how device tokens are stored and looked up. */
@@ -215,6 +235,12 @@ const messages: Record<string, string> = {
   REVISION_REQUIRED: "not saved: the order was revised, acknowledge the change first",
   ASSIGNMENT_CONFLICT: "this order belongs to someone else",
   QUANTITY_OUT_OF_RANGE: "the quantity is outside what this task needs",
+  ROLE_REQUIRED: "your role cannot do this",
+  OPEN_EXCEPTION: "a problem is already reported on this order",
+  UNKNOWN_SKU: "that SKU is not in the catalogue",
+  NO_CHANGE: "nothing changed",
+  DUPLICATE_SKU: "that SKU is already in the order",
+  ORDER_TOO_LARGE: "the order is over the size limit",
   IDEMPOTENCY_CONFLICT: "this command ID was already used for a different request",
   TERMINAL_ORDER: "the order is already closed",
   INVALID_TRANSITION: "that action is not available now",

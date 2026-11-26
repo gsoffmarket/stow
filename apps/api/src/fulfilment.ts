@@ -9,43 +9,91 @@
 // Nothing here talks to the network, so a slow Telegram can never hold a lock
 // or roll back a physical confirmation.
 
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type pg from "pg";
-import { claim, complete, confirm, plan, type Order, type Outcome, type Plan, type Rejection, type TaskKind } from "@stow/order-engine";
+import {
+  acknowledge,
+  acknowledgeResolution,
+  claim,
+  closeCancelled,
+  complete,
+  confirm,
+  pause,
+  plan,
+  report,
+  requestCancel,
+  resolve,
+  resume,
+  revise,
+  type Change,
+  type ExceptionType,
+  type Line,
+  type Order,
+  type Outcome,
+  type Plan,
+  type Rejection,
+  type TaskKind,
+} from "@stow/order-engine";
 import type { OrderRequest } from "@stow/telegram/commands";
 
-/** PickerCommand is what a worker's device may ask for in Gate A. */
-export type PickerCommand =
-  | { readonly type: "CLAIM_ORDER"; readonly orderId: string; readonly revision: number; readonly version: number; readonly toteId: string | null }
-  | {
-      readonly type: "CONFIRM_TASK";
-      readonly orderId: string;
-      readonly revision: number;
-      readonly version: number;
-      readonly kind: TaskKind;
-      readonly lineId: string;
-      readonly quantity: number;
-    }
-  | { readonly type: "COMPLETE_ORDER"; readonly orderId: string; readonly revision: number; readonly version: number };
+/** Role is a member's role in a workspace. */
+export type Role = "OWNER" | "COORDINATOR" | "PICKER" | "VIEWER";
+
+/** Actor is who is issuing a command. */
+export type Actor = { readonly workspaceId: string; readonly memberId: string; readonly role: Role };
+
+type Expected = { readonly orderId: string; readonly revision: number; readonly version: number };
+
+/** Coordinator edits name SKUs; the server resolves them against the catalogue. */
+export type RevisionChange =
+  | { readonly kind: "SET_QUANTITY"; readonly lineId: string; readonly quantity: number }
+  | { readonly kind: "ADD_LINE"; readonly sku: string; readonly quantity: number };
+
+export type ResolutionRequest =
+  | { readonly kind: "RESUME" }
+  | { readonly kind: "REDUCE"; readonly quantity: number }
+  | { readonly kind: "SUBSTITUTE"; readonly quantity: number; readonly sku: string; readonly substituteQuantity: number }
+  | { readonly kind: "CANCEL" };
+
+/** Command is everything a picker or coordinator can do to an existing order. */
+export type Command = Expected &
+  (
+    | { readonly type: "CLAIM_ORDER"; readonly toteId: string | null }
+    | { readonly type: "CONFIRM_TASK"; readonly kind: TaskKind; readonly lineId: string; readonly quantity: number }
+    | { readonly type: "COMPLETE_ORDER" | "ACK_REVISION" | "PAUSE_ORDER" | "RESUME_ORDER" | "CLOSE_CANCELLED" }
+    | { readonly type: "REPORT_EXCEPTION"; readonly exceptionType: ExceptionType; readonly reportedQty: number | null }
+    | { readonly type: "ACK_RESOLUTION"; readonly exceptionId: string }
+    | { readonly type: "REVISE_ORDER"; readonly reason: string; readonly changes: readonly RevisionChange[] }
+    | { readonly type: "REQUEST_CANCEL"; readonly reason: string }
+    | { readonly type: "RESOLVE_EXCEPTION"; readonly reason: string; readonly resolution: ResolutionRequest }
+  );
+
+const coordinatorCommands = new Set<Command["type"]>(["REVISE_ORDER", "REQUEST_CANCEL", "RESOLVE_EXCEPTION"]);
 
 export type CommandResult =
   | { readonly status: 200; readonly body: { readonly outcome: "APPLIED"; readonly seq: string; readonly orderId: string; readonly version: string } }
+  | { readonly status: 200; readonly body: { readonly outcome: "NO_CHANGE"; readonly seq: null; readonly orderId: string; readonly version: string } }
+  | { readonly status: 400; readonly body: { readonly code: "UNKNOWN_SKU"; readonly skus: readonly string[] } }
+  | { readonly status: 403; readonly body: { readonly code: "ROLE_REQUIRED" } }
   | { readonly status: 404; readonly body: { readonly code: "NOT_FOUND" } }
-  | { readonly status: 409; readonly body: { readonly code: Rejection | "IDEMPOTENCY_CONFLICT" } };
+  | { readonly status: 409; readonly body: { readonly code: Exclude<Rejection, "NO_CHANGE"> | "IDEMPOTENCY_CONFLICT" } };
 
-/** runPickerCommand executes one picker command exactly once per command ID. */
-export async function runPickerCommand(
-  pool: pg.Pool,
-  actor: { readonly workspaceId: string; readonly workerId: string },
-  commandId: string,
-  command: PickerCommand,
-): Promise<CommandResult> {
+/**
+ * runCommand executes one command exactly once per command ID: the actor's
+ * role decides which commands are allowed, the engine decides whether the
+ * order's state allows it.
+ */
+export async function runCommand(pool: pg.Pool, actor: Actor, commandId: string, command: Command): Promise<CommandResult> {
+  const isCoordinatorCommand = coordinatorCommands.has(command.type);
+  const allowed = actor.role === "OWNER" || actor.role === (isCoordinatorCommand ? "COORDINATOR" : "PICKER");
+  if (!allowed) return { status: 403, body: { code: "ROLE_REQUIRED" } };
+
   const requestHash = hashCommand(command);
   return transaction(pool, async (client) => {
     await lockWorkspace(client, actor.workspaceId);
     const previous = await client.query<{ request_hash: string; http_status: number; response: CommandResult["body"] }>(
       "select request_hash, http_status, response from command_results where workspace_id = $1 and actor_member_id = $2 and command_id = $3",
-      [actor.workspaceId, actor.workerId, commandId],
+      [actor.workspaceId, actor.memberId, commandId],
     );
     const stored = previous.rows[0];
     if (stored) {
@@ -54,64 +102,134 @@ export async function runPickerCommand(
     }
 
     const before = await loadOrder(client, actor.workspaceId, command.orderId);
-    if (!before) return { status: 404, body: { code: "NOT_FOUND" } };
-    const outcome = apply(before, actor.workerId, command);
-    const result: CommandResult = outcome.ok
-      ? await commit(client, actor, commandId, command, before, outcome.order)
-      : { status: 409, body: { code: outcome.code } };
+    const result = before ? await execute(client, actor, commandId, command, before) : ({ status: 404, body: { code: "NOT_FOUND" } } as const);
     // Rejections are stored too, so a retry of a refused command is refused the same way.
     await client.query(
       "insert into command_results (workspace_id, actor_member_id, command_id, request_hash, http_status, response) values ($1, $2, $3, $4, $5, $6)",
-      [actor.workspaceId, actor.workerId, commandId, requestHash, result.status, result.body],
+      [actor.workspaceId, actor.memberId, commandId, requestHash, result.status, result.body],
     );
     return result;
   });
 }
 
-async function commit(
-  client: pg.ClientBase,
-  actor: { readonly workspaceId: string; readonly workerId: string },
-  commandId: string,
-  command: PickerCommand,
-  before: Order,
-  after: Order,
-): Promise<CommandResult> {
-  await saveOrder(client, actor.workspaceId, before, after, actor.workerId);
+async function execute(client: pg.ClientBase, actor: Actor, commandId: string, command: Command, before: Order): Promise<CommandResult> {
+  const products = await resolveSkus(client, actor.workspaceId, skusIn(command));
+  const unknown = skusIn(command).filter((sku) => !products.has(sku));
+  if (unknown.length > 0) return { status: 400, body: { code: "UNKNOWN_SKU", skus: unknown } };
+
+  const outcome = apply(before, actor.memberId, command, products);
+  if (!outcome.ok) {
+    const code = outcome.code;
+    if (code === "NO_CHANGE") return { status: 200, body: { outcome: "NO_CHANGE", seq: null, orderId: before.id, version: String(before.version) } };
+    return { status: 409, body: { code } };
+  }
+
+  const after = outcome.order;
+  await saveOrder(client, actor, before, after, command, products);
   const seq = await appendEvent(client, actor.workspaceId, {
     orderId: after.id,
     type: eventType(command),
-    actorId: actor.workerId,
+    actorId: actor.memberId,
     commandId,
     revision: after.revision,
     version: after.version,
-    payload: eventPayload(command),
+    payload: eventPayload(command, after),
   });
   await queueStatusUpdate(client, actor.workspaceId, after.id, after.version);
   return { status: 200, body: { outcome: "APPLIED", seq: String(seq), orderId: after.id, version: String(after.version) } };
 }
 
-function apply(order: Order, workerId: string, command: PickerCommand): Outcome {
+type Product = { id: string; sku: string; name: string; bin: string | null; route_rank: number };
+
+function skusIn(command: Command): string[] {
+  if (command.type === "REVISE_ORDER") return command.changes.flatMap((change) => (change.kind === "ADD_LINE" ? [change.sku] : []));
+  if (command.type === "RESOLVE_EXCEPTION" && command.resolution.kind === "SUBSTITUTE") return [command.resolution.sku];
+  return [];
+}
+
+async function resolveSkus(client: pg.ClientBase, workspaceId: string, skus: string[]): Promise<Map<string, Product>> {
+  if (skus.length === 0) return new Map();
+  const { rows } = await client.query<Product & { normalized_sku: string }>(
+    "select id, normalized_sku, sku, name, bin, route_rank from products where workspace_id = $1 and is_active and normalized_sku = any($2)",
+    [workspaceId, skus],
+  );
+  return new Map(rows.map((row) => [row.normalized_sku, row]));
+}
+
+// A new line gets its ID here, so the engine stays free of randomness.
+function newLine(product: Product): Omit<Line, "requested" | "picked" | "creationIndex"> {
+  return { id: randomUUID(), sku: product.sku, name: product.name, bin: product.bin, routeRank: product.route_rank };
+}
+
+function apply(order: Order, memberId: string, command: Command, products: Map<string, Product>): Outcome {
   const expected = { revision: command.revision, version: command.version };
   switch (command.type) {
     case "CLAIM_ORDER":
-      return claim(order, workerId, command.toteId, expected);
+      return claim(order, memberId, command.toteId, expected);
     case "CONFIRM_TASK":
-      return confirm(order, workerId, { ...expected, kind: command.kind, lineId: command.lineId, quantity: command.quantity });
+      return confirm(order, memberId, { ...expected, kind: command.kind, lineId: command.lineId, quantity: command.quantity });
     case "COMPLETE_ORDER":
-      return complete(order, workerId, expected);
+      return complete(order, memberId, expected);
+    case "ACK_REVISION":
+      return acknowledge(order, memberId, expected);
+    case "PAUSE_ORDER":
+      return pause(order, memberId, expected);
+    case "RESUME_ORDER":
+      return resume(order, memberId, expected);
+    case "CLOSE_CANCELLED":
+      return closeCancelled(order, memberId, expected);
+    case "REPORT_EXCEPTION":
+      return report(order, memberId, { exceptionId: randomUUID(), type: command.exceptionType, reportedQty: command.reportedQty }, expected);
+    case "ACK_RESOLUTION":
+      return acknowledgeResolution(order, memberId, command.exceptionId, expected);
+    case "REVISE_ORDER": {
+      const changes: Change[] = command.changes.map((change) =>
+        change.kind === "SET_QUANTITY" ? change : { kind: "ADD_LINE", line: newLine(products.get(change.sku)!), quantity: change.quantity },
+      );
+      return revise(order, changes, expected);
+    }
+    case "REQUEST_CANCEL":
+      return requestCancel(order, expected);
+    case "RESOLVE_EXCEPTION": {
+      const r = command.resolution;
+      if (r.kind !== "SUBSTITUTE") return resolve(order, r, expected);
+      return resolve(order, { kind: "SUBSTITUTE", quantity: r.quantity, substitute: newLine(products.get(r.sku)!), substituteQuantity: r.substituteQuantity }, expected);
+    }
   }
 }
 
-function eventType(command: PickerCommand): string {
-  if (command.type === "CLAIM_ORDER") return "ORDER_CLAIMED";
-  if (command.type === "COMPLETE_ORDER") return "ORDER_COMPLETED";
-  return command.kind === "PICK" ? "PICK_CONFIRMED" : "RETURN_CONFIRMED";
+const eventTypes: Record<Exclude<Command["type"], "CONFIRM_TASK">, string> = {
+  CLAIM_ORDER: "ORDER_CLAIMED",
+  COMPLETE_ORDER: "ORDER_COMPLETED",
+  ACK_REVISION: "REVISION_ACKNOWLEDGED",
+  PAUSE_ORDER: "ORDER_PAUSED",
+  RESUME_ORDER: "ORDER_RESUMED",
+  CLOSE_CANCELLED: "ORDER_CANCELLED",
+  REPORT_EXCEPTION: "EXCEPTION_REPORTED",
+  ACK_RESOLUTION: "RESOLUTION_ACKNOWLEDGED",
+  REVISE_ORDER: "ORDER_REVISED",
+  REQUEST_CANCEL: "ORDER_CANCEL_REQUESTED",
+  RESOLVE_EXCEPTION: "EXCEPTION_RESOLVED",
+};
+
+function eventType(command: Command): string {
+  if (command.type === "CONFIRM_TASK") return command.kind === "PICK" ? "PICK_CONFIRMED" : "RETURN_CONFIRMED";
+  return eventTypes[command.type];
 }
 
-function eventPayload(command: PickerCommand): Record<string, unknown> {
-  if (command.type === "CONFIRM_TASK") return { lineId: command.lineId, quantity: command.quantity };
-  if (command.type === "CLAIM_ORDER") return { toteId: command.toteId };
-  return {};
+function eventPayload(command: Command, after: Order): Record<string, unknown> {
+  switch (command.type) {
+    case "CONFIRM_TASK":
+      return { lineId: command.lineId, quantity: command.quantity };
+    case "CLAIM_ORDER":
+      return { toteId: command.toteId };
+    case "REPORT_EXCEPTION":
+      return { exceptionId: after.exception?.id, type: command.exceptionType, reportedQty: command.reportedQty };
+    case "RESOLVE_EXCEPTION":
+      return { resolution: command.resolution.kind };
+    default:
+      return {};
+  }
 }
 
 /** WorkerView is the order a worker should see now and what to do with it. */
@@ -302,6 +420,11 @@ export async function loadOrder(client: pg.ClientBase, workspaceId: string, orde
     [workspaceId, orderId],
   );
   const live = assignment.rows[0];
+  const open = await client.query<{ id: string; status: "OPEN" | "RESOLVED_AWAITING_ACK"; type: ExceptionType; line_id: string | null; reported_qty: number | null }>(
+    "select id, status, type, line_id, reported_qty from order_exceptions where workspace_id = $1 and order_id = $2 and status <> 'CLOSED'",
+    [workspaceId, orderId],
+  );
+  const exception = open.rows[0];
   return {
     id: row.id,
     ref: row.ref,
@@ -311,7 +434,9 @@ export async function loadOrder(client: pg.ClientBase, workspaceId: string, orde
     isPaused: row.is_paused,
     isCancelRequested: row.is_cancel_requested,
     isReleaseRequested: row.is_release_requested,
-    exception: null,
+    exception: exception
+      ? { id: exception.id, status: exception.status, type: exception.type, lineId: exception.line_id, reportedQty: exception.reported_qty }
+      : null,
     assignment: live ? { workerId: live.worker_id, toteId: live.tote_id, isAccepted: live.is_accepted, ackRevision: live.ack_revision } : null,
     lines: lines.rows.map((line) => ({
       id: line.id,
@@ -326,25 +451,67 @@ export async function loadOrder(client: pg.ClientBase, workspaceId: string, orde
   };
 }
 
-// Writes only what the engine changed. Gate A commands change version,
-// terminal state, picked counts and the assignment.
-async function saveOrder(client: pg.ClientBase, workspaceId: string, before: Order, after: Order, workerId: string): Promise<void> {
-  await client.query("update orders set version = $3, terminal = $4, updated_at = now() where workspace_id = $1 and id = $2", [
-    workspaceId,
-    after.id,
-    after.version,
-    after.terminal,
-  ]);
+// Writes exactly what the engine changed: order flags, line targets and
+// counts, new lines, the assignment, the exception, and a revision record
+// whenever the revision number moved.
+async function saveOrder(client: pg.ClientBase, actor: Actor, before: Order, after: Order, command: Command, products: Map<string, Product>): Promise<void> {
+  const ws = actor.workspaceId;
+  await client.query(
+    `update orders set revision = $3, version = $4, terminal = $5, is_paused = $6, is_cancel_requested = $7, is_release_requested = $8, updated_at = now()
+     where workspace_id = $1 and id = $2`,
+    [ws, after.id, after.revision, after.version, after.terminal, after.isPaused, after.isCancelRequested, after.isReleaseRequested],
+  );
   for (const line of after.lines) {
     const old = before.lines.find((candidate) => candidate.id === line.id);
-    if (old?.picked === line.picked) continue;
-    await client.query("update order_lines set picked_qty = $3 where workspace_id = $1 and id = $2", [workspaceId, line.id, line.picked]);
+    if (!old) {
+      const product = [...products.values()].find((candidate) => candidate.sku === line.sku)!;
+      await client.query(
+        `insert into order_lines (workspace_id, id, order_id, product_id, sku_snapshot, name_snapshot, bin_snapshot,
+           route_rank_snapshot, creation_index, requested_qty, picked_qty) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+        [ws, line.id, after.id, product.id, line.sku, line.name, line.bin, line.routeRank, line.creationIndex, line.requested, line.picked],
+      );
+    } else if (old.requested !== line.requested || old.picked !== line.picked) {
+      await client.query("update order_lines set requested_qty = $3, picked_qty = $4 where workspace_id = $1 and id = $2", [ws, line.id, line.requested, line.picked]);
+    }
   }
   if (!before.assignment && after.assignment) {
     await client.query(
       "insert into assignments (workspace_id, order_id, worker_id, tote_id, is_accepted, ack_revision) values ($1, $2, $3, $4, true, $5)",
-      [workspaceId, after.id, workerId, after.assignment.toteId, after.assignment.ackRevision],
+      [ws, after.id, after.assignment.workerId, after.assignment.toteId, after.assignment.ackRevision],
     );
+  } else if (before.assignment && after.assignment && before.assignment.ackRevision !== after.assignment.ackRevision) {
+    await client.query("update assignments set ack_revision = $3 where workspace_id = $1 and order_id = $2 and released_at is null", [ws, after.id, after.assignment.ackRevision]);
+  }
+  await saveException(client, actor, before, after, command);
+  if (after.revision !== before.revision) {
+    const targets = (order: Order) => Object.fromEntries(order.lines.map((line) => [line.sku, line.requested]));
+    const reason = "reason" in command ? command.reason : command.type;
+    await client.query(
+      `insert into order_revisions (workspace_id, order_id, revision, reason, actor_member_id, prior_targets, new_targets)
+       values ($1, $2, $3, $4, $5, $6, $7)`,
+      [ws, after.id, after.revision, reason, actor.memberId, targets(before), targets(after)],
+    );
+  }
+}
+
+async function saveException(client: pg.ClientBase, actor: Actor, before: Order, after: Order, command: Command): Promise<void> {
+  const ws = actor.workspaceId;
+  const was = before.exception;
+  const now = after.exception;
+  if (!was && now) {
+    await client.query(
+      `insert into order_exceptions (workspace_id, id, order_id, line_id, type, reported_qty, status, reporter_id, reported_revision)
+       values ($1, $2, $3, $4, $5, $6, 'OPEN', $7, $8)`,
+      [ws, now.id, after.id, now.lineId, now.type, now.reportedQty, actor.memberId, after.revision],
+    );
+  } else if (was && now && was.status !== now.status && command.type === "RESOLVE_EXCEPTION") {
+    await client.query(
+      `update order_exceptions set status = $3, resolution = $4, resolution_reason = $5, resolver_id = $6, resolved_at = now()
+       where workspace_id = $1 and id = $2`,
+      [ws, now.id, now.status, command.resolution.kind, command.reason, actor.memberId],
+    );
+  } else if (was && !now) {
+    await client.query("update order_exceptions set status = 'CLOSED', acknowledged_at = now() where workspace_id = $1 and id = $2", [ws, was.id]);
   }
 }
 
@@ -368,11 +535,19 @@ export async function transaction<T>(
   }
 }
 
-// The request hash covers the command's content, not its ID, with keys in a
-// fixed order so the same command always hashes the same.
-function hashCommand(command: PickerCommand): string {
-  const canonical = JSON.stringify(command, Object.keys(command).sort());
-  return createHash("sha256").update(canonical).digest("hex");
+// The request hash covers the command's content, not its ID. Keys are sorted
+// at every depth so the same command always hashes the same.
+function hashCommand(command: Command): string {
+  return createHash("sha256").update(canonicalJson(command)).digest("hex");
+}
+
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (value && typeof value === "object") {
+    const entries = Object.entries(value).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+    return `{${entries.map(([key, item]) => `${JSON.stringify(key)}:${canonicalJson(item)}`).join(",")}}`;
+  }
+  return JSON.stringify(value);
 }
 
 function toSafeNumber(value: string): number {

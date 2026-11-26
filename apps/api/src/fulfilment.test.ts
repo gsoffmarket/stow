@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
-import { createOrder, runPickerCommand, workerView, type PickerCommand } from "./fulfilment.ts";
+import { createOrder, runCommand, workerView, type Command } from "./fulfilment.ts";
 import { createTestDatabase, type TestDatabase } from "./db/testdb.ts";
 
 let db: TestDatabase;
@@ -47,8 +47,8 @@ async function newOrder(ws: Workspace, sourceKey = `telegram:${randomUUID()}`) {
   return created;
 }
 
-const run = (ws: Workspace, worker: string, command: PickerCommand, commandId: string = randomUUID()) =>
-  runPickerCommand(db.pool, { workspaceId: ws.workspaceId, workerId: worker }, commandId, command);
+const run = (ws: Workspace, worker: string, command: Command, commandId: string = randomUUID()) =>
+  runCommand(db.pool, { workspaceId: ws.workspaceId, memberId: worker, role: "PICKER" }, commandId, command);
 
 async function picked(orderId: string): Promise<number[]> {
   const { rows } = await db.pool.query<{ picked_qty: number }>(
@@ -91,7 +91,7 @@ describe("createOrder", () => {
   });
 });
 
-describe("runPickerCommand", () => {
+describe("runCommand", () => {
   test("claim then confirm records the pick, the events and a status update per change", async () => {
     const ws = await workspace();
     const { orderId } = await newOrder(ws);
@@ -115,7 +115,7 @@ describe("runPickerCommand", () => {
     await run(ws, ws.picker, { type: "CLAIM_ORDER", orderId, revision: 1, version: 1, toteId: "A" });
     const view = await workerView(db.pool, ws.workspaceId, ws.picker);
     const lineId = view.plan.kind === "TASK" ? view.plan.task.lineId : "";
-    const confirmTwo: PickerCommand = { type: "CONFIRM_TASK", orderId, revision: 1, version: 2, kind: "PICK", lineId, quantity: 2 };
+    const confirmTwo: Command = { type: "CONFIRM_TASK", orderId, revision: 1, version: 2, kind: "PICK", lineId, quantity: 2 };
     const commandId = randomUUID();
 
     const first = await run(ws, ws.picker, confirmTwo, commandId);
@@ -144,7 +144,7 @@ describe("runPickerCommand", () => {
     const { orderId } = await newOrder(ws);
     const claimBy = (worker: string) => run(ws, worker, { type: "CLAIM_ORDER", orderId, revision: 1, version: 1, toteId: null });
     const results = await Promise.all([claimBy(ws.picker), claimBy(ws.otherPicker)]);
-    expect(results.map((result) => result.status).sort()).toEqual([200, 409]);
+    expect(results.map((result: { status: number }) => result.status).sort()).toEqual([200, 409]);
     const live = await db.pool.query("select count(*)::int as n from assignments where order_id = $1 and released_at is null", [orderId]);
     expect(live.rows[0]).toEqual({ n: 1 });
   });
