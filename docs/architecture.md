@@ -1,0 +1,79 @@
+# Architecture
+
+## Bird's-eye view
+
+A coordinator posts an order in a Telegram work group. Stow turns it into one-item picking instructions on Even G2 glasses. The picker confirms what they physically put in the tote, and the group's status message for that order updates as they go.
+
+The hard part is not the display but the order changing while someone is picking it. Stow keeps two numbers per line: `requested` (the coordinator's current target) and `picked` (net worker-confirmed units in the tote). It never clamps one to the other. When `picked` exceeds `requested`, the difference is a return the picker must do first. Every command carries the revision and version the client saw, so a tap on a stale screen is refused instead of applied to the new plan.
+
+```
+Telegram group ──updates──▶ inbox ──▶ createOrder ─┐
+                                                   ▼
+Glasses (Even Hub SDK) ──commands──▶ HTTP ──▶ fulfilment ──▶ order engine (pure)
+        ▲                                          │
+        └──────── snapshot (poll) ◀────────────────┤  one transaction:
+                                                   │  state + event + command result + outbox row
+Telegram group ◀── edit status message ◀── outbox ◀┘
+```
+
+## Codemap
+
+| Path | What lives there |
+|---|---|
+| `packages/order-engine/src/engine.ts` | Pure domain core: `plan` derives the next task; `claim`, `confirm`, `complete` validate and apply commands. No I/O, no clock. |
+| `packages/telegram/src/commands.ts` | Strict parsing of bot commands and the `/order` grammar. |
+| `packages/telegram/src/status.ts` | Plain-text rendering of an order's status message. |
+| `packages/telegram/src/botapi.ts` | Bot API client that classifies every outcome as ok, retry, rejected or unknown. |
+| `apps/api/src/fulfilment.ts` | Imperative shell around the engine: transactions, locking, idempotency, events, outbox. |
+| `apps/api/src/http.ts` | Fastify routes for the glasses: worker snapshot and commands. Device auth and task tokens. |
+| `apps/api/src/telegram.ts` | Inbox intake, group binding, `/order`, outbox delivery, polling loops. |
+| `apps/api/src/local.ts` | Local-only setup, test order and bind-code commands. |
+| `apps/glasses/src/screens.ts` | Pure choice of what the glasses show for a snapshot and link state. |
+| `apps/glasses/src/main.ts` | Even Hub bridge glue: render, input, polling, command sending. |
+| `db/migrations/` | Forward-only SQL migrations. |
+
+## Invariants
+
+- The engine never imports I/O, a clock or randomness; the API and the glasses depend on it, never the reverse.
+- `picked >= 0` on every line, enforced by the engine (assertion) and a CHECK constraint.
+- A rejected command changes nothing. A repeated command ID returns its first result; the same ID with a different payload is refused.
+- Every mutation writes state, its event, its command result and its outbox row in one transaction. No network call happens inside a transaction.
+- Every child row references its parent through `(workspace_id, id)`, so a row can never point into another workspace.
+- Writers lock the workspace row first, then the order, then its lines. That fixed order makes deadlocks impossible.
+- Workspace event sequence numbers are allocated only for committed events, so there are no gaps from rejections.
+- Telegram delivery never decides whether physical work was saved. A first send whose outcome is unknown is marked uncertain and never repeated automatically.
+- Only explicit bot commands are read. Plain chat, bot messages, anonymous admins and forwards are never processed.
+
+## Boundaries
+
+- **Glasses ↔ API:** HTTPS JSON. The glasses hold an opaque device token (stored hashed) and send back the task token issued with each task.
+- **API ↔ Telegram:** Bot API over HTTPS. Long polling locally; a webhook in hosted deployments (never both for one bot).
+- **API ↔ Postgres:** the only durable state.
+
+## Key decisions
+
+| Decision | Chosen | Rejected, and why |
+|---|---|---|
+| Deployable units | One API process (HTTP plus Telegram loops) and one static glasses app | A separate worker service: not needed at this scale; the outbox loop has leases so it can move out later. |
+| Realtime | Snapshot polling every 1.5 s | WebSocket or SSE: not yet verified in the Even Hub WebView; polling is the PRD's fallback and is simple to reason about. |
+| Telegram client | Small `fetch` client | grammY: the outbox needs explicit outcome classification and per-call deadlines more than a framework. |
+| Server runtime | Node 24 running TypeScript directly (type stripping) | A build step or tsx: unnecessary with erasable-only syntax. |
+| Glasses layout | Three text containers updated in place | Image rendering for larger type: image updates cost seconds over Bluetooth; text updates are instant and flicker-free. |
+| Status message | One bot message per order, edited in place | A message per change: noisy for the group and harder to read. |
+
+## Defaults applied
+
+- PostgreSQL 18, UUIDv7 IDs generated by the database (`uuidv7()`), used as primary keys. The PRD specifies UUID primary keys, so there is no separate internal identity column.
+- `timestamptz` everywhere, UTC.
+- Text limits as `text` with CHECK constraints.
+- Bigint versions and sequences travel as decimal strings.
+- Configuration from environment variables, validated once at startup.
+- Structured JSON logs from Fastify with the authorization header redacted.
+- API errors use the PRD's envelope (`{ error: { code, message, retryable }, meta }`) rather than RFC 9457, because the PRD specifies it.
+- Idempotency through `commandId` on the command endpoint, stored durably with a request hash.
+
+## Not planned
+
+- Automatic stock or inventory updates; Stow records worker-confirmed actions only.
+- Reading Telegram messages other than explicit bot commands.
+- Background notifications on the glasses; the app works while it is open.
