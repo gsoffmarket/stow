@@ -1,0 +1,8 @@
+{
+  "name": "@stow/order-engine",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/engine.ts"
+  }
+}
