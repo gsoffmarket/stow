@@ -48,3 +48,58 @@ export function signIn(initData: string): Promise<Session> {
 export function approvePairing(token: string, workspaceId: string, code: string): Promise<{ label: string }> {
   return call("/v1/devices/pairings/approve", { method: "POST", token, body: { workspaceId, code } });
 }
+
+export type Hold = "NONE" | "AWAITING_PICKER" | "BLOCKED" | "CANCELLING" | "PAUSED";
+
+export type OrderRow = {
+  id: string;
+  ref: string;
+  terminal: "COMPLETED" | "CANCELLED" | null;
+  hold: Hold;
+  picker: string | null;
+  toteId: string | null;
+  confirmed: number;
+  requested: number;
+  lines: number;
+  revision: number;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type View = "needs_you" | "active" | "done";
+
+export type OrderDetail = {
+  order: OrderRow & { version: string };
+  lines: { id: string; sku: string; name: string; bin: string | null; requested: number; picked: number }[];
+  exception: { id: string; type: string; lineId: string | null; sku: string | null; reportedQty: number | null; status: string } | null;
+  timeline: { seq: string; type: string; actor: string | null; at: string; detail: string | null }[];
+  messages: { direction: "TO_PICKER" | "TO_GROUP"; body: string; author: string; at: string; isRead: boolean }[];
+};
+
+export type Resolution = { kind: "RESUME" } | { kind: "REDUCE"; quantity: number } | { kind: "CANCEL" };
+
+export type ConsoleCommand =
+  | { type: "REVISE_ORDER"; payload: { reason: string; changes: { kind: "SET_QUANTITY"; lineId: string; quantity: number }[] } }
+  | { type: "REQUEST_CANCEL"; payload: { reason: string } }
+  | { type: "RESOLVE_EXCEPTION"; payload: { reason: string; resolution: Resolution } };
+
+export function listOrders(token: string, workspaceId: string, view: View): Promise<{ orders: OrderRow[] }> {
+  return call(`/v1/workspaces/${workspaceId}/orders?view=${view}`, { method: "GET", token });
+}
+
+export function getOrder(token: string, workspaceId: string, orderId: string): Promise<OrderDetail> {
+  return call(`/v1/workspaces/${workspaceId}/orders/${orderId}`, { method: "GET", token });
+}
+
+export function sendNote(token: string, workspaceId: string, orderId: string, body: string): Promise<{ posted: true }> {
+  return call(`/v1/workspaces/${workspaceId}/orders/${orderId}/notes`, { method: "POST", token, body: { body } });
+}
+
+/** runCommand sends a coordinator command bound to the order state the screen showed. */
+export function runCommand(token: string, workspaceId: string, detail: OrderDetail, command: ConsoleCommand): Promise<{ outcome: "APPLIED" | "NO_CHANGE" }> {
+  return call(`/v1/workspaces/${workspaceId}/console/commands`, {
+    method: "POST",
+    token,
+    body: { commandId: crypto.randomUUID(), orderId: detail.order.id, expectedRevision: detail.order.revision, expectedVersion: detail.order.version, ...command },
+  });
+}

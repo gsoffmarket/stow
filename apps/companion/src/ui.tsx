@@ -67,3 +67,28 @@ export function Mark() {
     </svg>
   );
 }
+
+/** Sheet rises from the bottom; dragging it down closes it, a deliberate way out. */
+export function Sheet({ label, onClose, children }: { label: string; onClose: () => void; children: ReactNode }) {
+  return (
+    <>
+      <m.div aria-hidden="true" className="fixed inset-0 bg-black/60" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={onClose} />
+      <m.div
+        role="dialog"
+        aria-label={label}
+        className="fixed inset-x-0 bottom-0 mx-auto flex max-h-[85dvh] max-w-[560px] flex-col gap-4 overflow-y-auto rounded-t-[var(--radius-panel)] bg-surface px-4 pt-2 pb-8 shadow-[var(--shadow-popover)]"
+        initial={{ y: "100%" }}
+        animate={{ y: 0 }}
+        exit={{ y: "100%" }}
+        transition={{ type: "spring", visualDuration: 0.35, bounce: 0.15 }}
+        drag="y"
+        dragConstraints={{ top: 0, bottom: 0 }}
+        dragElastic={{ top: 0, bottom: 0.6 }}
+        onDragEnd={(_, info) => info.offset.y > 120 && onClose()}
+      >
+        <span aria-hidden="true" className="mx-auto h-1 w-9 rounded-full bg-border-strong" />
+        {children}
+      </m.div>
+    </>
+  );
+}

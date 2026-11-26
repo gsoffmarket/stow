@@ -4,6 +4,8 @@
 import { useEffect, useState } from "react";
 import { signIn, type Session } from "./api.ts";
 import { copy } from "./copy.ts";
+import { OrderDetail } from "./OrderDetail.tsx";
+import { Orders } from "./Orders.tsx";
 import { Pair } from "./Pair.tsx";
 import { launchData, startParam } from "./telegram.ts";
 import { Card, GhostButton, Mark, Page, PrimaryButton } from "./ui.tsx";
@@ -46,9 +48,22 @@ export function App() {
 }
 
 function Signed({ session, view, setView }: { session: Session; view: "home" | "pair"; setView: (view: "home" | "pair") => void }) {
+  const [openOrder, setOpenOrder] = useState<string | null>(null);
   const pickers = session.memberships.filter((m) => m.role === "PICKER" || m.role === "OWNER");
+  const coordinates = session.memberships.find((m) => m.role === "COORDINATOR" || m.role === "OWNER");
   if (session.memberships.length === 0) return <Message title={copy.noWorkspace.title} body={copy.noWorkspace.body} />;
   if (view === "pair" && pickers.length > 0) return <Pair token={session.token} workspaces={pickers} onBack={() => setView("home")} />;
+  if (coordinates && openOrder) {
+    return <OrderDetail token={session.token} workspaceId={coordinates.workspaceId} orderId={openOrder} onBack={() => setOpenOrder(null)} />;
+  }
+  if (coordinates) {
+    return (
+      <>
+        <Orders token={session.token} workspaceId={coordinates.workspaceId} onOpen={setOpenOrder} />
+        {pickers.length > 0 && <GhostButton onClick={() => setView("pair")}>{copy.orders.pairGlasses}</GhostButton>}
+      </>
+    );
+  }
   return (
     <Card>
       <h1 className="text-2xl font-medium">{copy.home.greeting(session.user.firstName)}</h1>
