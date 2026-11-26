@@ -41,13 +41,45 @@ export type OrderParse = { readonly ok: true; readonly order: OrderRequest } | {
 export function parseOrder(command: Command): OrderParse {
   const errors: OrderError[] = [];
   const ref = command.args === "" ? null : command.args;
-  if (ref !== null && !/^[A-Za-z0-9][A-Za-z0-9_-]{0,39}$/.test(ref)) errors.push({ code: "INVALID_REF" });
-  if (command.body.length === 0) errors.push({ code: "NO_LINES" });
-  if (command.body.length > orderLimits.lines) return { ok: false, errors: [...errors, { code: "TOO_MANY_LINES" }] };
+  if (ref !== null && !isRef(ref)) errors.push({ code: "INVALID_REF" });
+  const parsed = parseLines(command.body, 1);
+  errors.push(...parsed.errors);
+  if (errors.length > 0) return { ok: false, errors };
+  return { ok: true, order: { ref, lines: parsed.lines } };
+}
 
+/**
+ * parseRevise reads `/revise REF` followed by `SKU x QTY` lines, or the
+ * one-line form `/revise REF SKU QTY`. Quantities are absolute targets and
+ * may be zero, which removes the line's demand.
+ */
+export function parseRevise(command: Command): { ok: true; ref: string; lines: { sku: string; quantity: number }[] } | { ok: false; errors: readonly OrderError[] } {
+  const [ref = "", ...rest] = command.args.split(/\s+/);
+  if (!isRef(ref)) return { ok: false, errors: [{ code: "INVALID_REF" }] };
+  const body = rest.length > 0 ? [rest.join(" ").replace(/^(\S+)\s+(\d+)$/, "$1 x $2"), ...command.body] : command.body;
+  const parsed = parseLines(body, 0);
+  if (parsed.errors.length > 0) return { ok: false, errors: parsed.errors };
+  return { ok: true, ref, lines: parsed.lines };
+}
+
+/** parseRefAndText reads `REF free text`, as in `/cancel ST-1 customer changed mind`. */
+export function parseRefAndText(args: string): { ref: string; text: string } | null {
+  const match = /^(\S+)(?:\s+(.*))?$/.exec(args.trim());
+  if (!match || !isRef(match[1]!)) return null;
+  return { ref: match[1]!, text: (match[2] ?? "").slice(0, 280) };
+}
+
+function isRef(ref: string): boolean {
+  return /^[A-Za-z0-9][A-Za-z0-9_-]{0,39}$/.test(ref);
+}
+
+function parseLines(body: readonly string[], minQuantity: number): { lines: { sku: string; quantity: number }[]; errors: OrderError[] } {
+  const errors: OrderError[] = [];
+  if (body.length === 0) errors.push({ code: "NO_LINES" });
+  if (body.length > orderLimits.lines) return { lines: [], errors: [...errors, { code: "TOO_MANY_LINES" }] };
   const lines: { sku: string; quantity: number }[] = [];
   const seen = new Set<string>();
-  command.body.forEach((text, index) => {
+  body.forEach((text, index) => {
     const line = index + 1;
     const match = /^([A-Za-z0-9][A-Za-z0-9._-]{0,63})\s*[xX×]\s*([0-9]{1,6})$/.exec(text);
     if (!match) {
@@ -56,16 +88,14 @@ export function parseOrder(command: Command): OrderParse {
     }
     const sku = match[1]!.toUpperCase();
     const quantity = Number(match[2]);
-    if (quantity < 1 || quantity > orderLimits.unitsPerLine) errors.push({ code: "QUANTITY_OUT_OF_RANGE", line });
+    if (quantity < minQuantity || quantity > orderLimits.unitsPerLine) errors.push({ code: "QUANTITY_OUT_OF_RANGE", line });
     // A repeated SKU is ambiguous (two picks, or a correction?), so it is
     // refused rather than summed or overwritten.
     if (seen.has(sku)) errors.push({ code: "DUPLICATE_SKU", line });
     seen.add(sku);
     lines.push({ sku, quantity });
   });
-
   const units = lines.reduce((sum, line) => sum + line.quantity, 0);
   if (units > orderLimits.unitsPerOrder) errors.push({ code: "ORDER_TOO_LARGE" });
-  if (errors.length > 0) return { ok: false, errors };
-  return { ok: true, order: { ref, lines } };
+  return { lines, errors };
 }

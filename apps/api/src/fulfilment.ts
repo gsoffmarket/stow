@@ -136,6 +136,9 @@ async function execute(client: pg.ClientBase, actor: Actor, commandId: string, c
     payload: eventPayload(command, after),
   });
   await queueStatusUpdate(client, actor.workspaceId, after.id, after.version);
+  if ((command.type === "REPORT_EXCEPTION" || command.type === "RESOLVE_EXCEPTION") && after.exception) {
+    await queueExceptionUpdate(client, actor.workspaceId, after.id, after.exception.id, after.exception.status);
+  }
   return { status: 200, body: { outcome: "APPLIED", seq: String(seq), orderId: after.id, version: String(after.version) } };
 }
 
@@ -357,6 +360,18 @@ async function queueStatusUpdate(client: pg.ClientBase, workspaceId: string, ord
      where o.workspace_id = $1 and o.id = $2
      on conflict (workspace_id, dedupe_key) do nothing`,
     [workspaceId, orderId, version],
+  );
+}
+
+// Queues the coordinator-facing message for a reported or resolved exception.
+async function queueExceptionUpdate(client: pg.ClientBase, workspaceId: string, orderId: string, exceptionId: string, status: string): Promise<void> {
+  await client.query(
+    `insert into telegram_outbox (workspace_id, connection_id, order_id, kind, dedupe_key, payload)
+     select o.workspace_id, c.id, o.id, 'EXCEPTION', 'exception:' || $3 || ':' || $4, jsonb_build_object('exceptionId', $3::text)
+     from orders o join telegram_connections c on c.workspace_id = o.workspace_id and c.id = o.connection_id and c.status = 'ACTIVE'
+     where o.workspace_id = $1 and o.id = $2
+     on conflict (workspace_id, dedupe_key) do nothing`,
+    [workspaceId, orderId, exceptionId, status],
   );
 }
 
