@@ -18,6 +18,7 @@ import * as catalogue from "./catalogue.ts";
 import * as connections from "./connections.ts";
 import * as members from "./members.ts";
 import * as reports from "./reports.ts";
+import * as workspaceSettings from "./settings.ts";
 import { Limiter, limits, type Limit } from "./limits.ts";
 import { memberships, sessionUser, startSession, verifyLaunchData } from "./identity.ts";
 import type { Actor } from "./fulfilment.ts";
@@ -282,6 +283,25 @@ export function buildHttp(options: HttpOptions): FastifyInstance {
     const actor = await coordinator(request, reply, options.pool);
     if (!actor) return reply;
     return ok(reply, request, { sessions: await sessions(options.pool, actor.workspaceId) });
+  });
+
+  // Settings: anyone on the console can read them; only owners change them.
+  app.get<{ Params: { wid: string } }>("/v1/workspaces/:wid/settings", async (request, reply) => {
+    const actor = await coordinator(request, reply, options.pool);
+    if (!actor) return reply;
+    return ok(reply, request, await workspaceSettings.settings(options.pool, actor.workspaceId));
+  });
+
+  app.post<{ Params: { wid: string } }>("/v1/workspaces/:wid/settings", async (request, reply) => {
+    const actor = await coordinator(request, reply, options.pool);
+    if (!actor) return reply;
+    if (!allow(request, reply, `command:${actor.memberId}`, limits.commands)) return reply;
+    const parsed = z
+      .object({ timeZone: z.string().max(64).refine(workspaceSettings.isTimeZone), retentionDays: z.union([z.literal(90), z.literal(365), z.null()]) })
+      .safeParse(request.body);
+    if (!parsed.success) return fail(reply, request, 400, "INVALID_INPUT");
+    const result = await workspaceSettings.changeSettings(options.pool, actor, parsed.data);
+    return result.ok ? ok(reply, request, result.settings) : fail(reply, request, 403, result.code);
   });
 
   // The onboarding checklist, read from the data so it resumes anywhere.

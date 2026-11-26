@@ -1,10 +1,12 @@
-// Process entry point: validate config, connect to Postgres, serve HTTP, and
-// run the Telegram loop when a bot is configured.
+// Process entry point: validate config, connect to Postgres, serve HTTP, purge
+// data past each workspace's retention, and run the Telegram loop when a bot
+// is configured.
 
 import pg from "pg";
 import { createBotApi } from "@stow/telegram/botapi";
 import { loadConfig } from "./config.ts";
 import { buildHttp } from "./http.ts";
+import { runRetention } from "./settings.ts";
 import { runTelegram } from "./telegram.ts";
 
 const config = loadConfig(process.env);
@@ -30,6 +32,7 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
 }
 
 await app.listen({ host: "0.0.0.0", port: config.PORT });
+void runRetention(pool, stop.signal, (msg, data) => app.log.info(data ?? {}, msg));
 
 if (config.TELEGRAM_BOT_TOKEN && config.TELEGRAM_BOT_USERNAME) {
   const api = createBotApi(config.TELEGRAM_BOT_TOKEN);

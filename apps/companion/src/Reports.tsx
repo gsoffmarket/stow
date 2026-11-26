@@ -1,10 +1,11 @@
 // What happened over a range of days, and the order history as CSV. Ranges
-// are whole days in this device's time zone; the definitions under the
-// numbers say exactly what each one counts, so nobody reads a vanity metric.
+// are whole days in the workspace's time zone from Settings, so everyone on
+// the team sees the same totals; the definitions under the numbers say
+// exactly what each one counts, so nobody reads a vanity metric.
 
 import { m } from "motion/react";
 import { useEffect, useState } from "react";
-import { ApiError, getReport, ordersCsv, type RangeQuery, type Report } from "./api.ts";
+import { ApiError, getReport, getSettings, ordersCsv, type RangeQuery, type Report } from "./api.ts";
 import { copy } from "./copy.ts";
 import { haptic } from "./telegram.ts";
 import { BackLink, PrimaryButton } from "./ui.tsx";
@@ -12,28 +13,40 @@ import { BackLink, PrimaryButton } from "./ui.tsx";
 type Props = { token: string; workspaceId: string; onBack: () => void };
 type Preset = "today" | "week" | "month" | "custom";
 
-const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
 const presets: Preset[] = ["today", "week", "month", "custom"];
 
-// A local calendar date, n days before today, as YYYY-MM-DD.
-function daysAgo(n: number): string {
-  const day = new Date();
-  day.setDate(day.getDate() - n);
-  return day.toLocaleDateString("en-CA");
+// The calendar date n days before today in a time zone, as YYYY-MM-DD.
+function daysAgo(n: number, timeZone: string): string {
+  const today = new Date().toLocaleDateString("en-CA", { timeZone });
+  const day = new Date(`${today}T00:00:00Z`);
+  day.setUTCDate(day.getUTCDate() - n);
+  return day.toISOString().slice(0, 10);
 }
 
 const presetRange = { today: 0, week: 6, month: 29 } as const;
 
 export function Reports({ token, workspaceId, onBack }: Props) {
+  const [timeZone, setTimeZone] = useState<string | null>(null);
   const [preset, setPreset] = useState<Preset>("week");
-  const [custom, setCustom] = useState({ from: daysAgo(6), to: daysAgo(0) });
+  const [custom, setCustom] = useState<{ from: string; to: string } | null>(null);
   const [result, setResult] = useState<Report | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isExporting, setIsExporting] = useState(false);
 
-  const range: RangeQuery = preset === "custom" ? { ...custom, timeZone } : { from: daysAgo(presetRange[preset]), to: daysAgo(0), timeZone };
+  useEffect(() => {
+    getSettings(token, workspaceId).then((loaded) => {
+      setTimeZone(loaded.timeZone);
+      setCustom({ from: daysAgo(6, loaded.timeZone), to: daysAgo(0, loaded.timeZone) });
+    }, (failure) => setError(message(failure)));
+  }, [token, workspaceId]);
+
+  const range: RangeQuery | null =
+    timeZone === null || custom === null ? null
+    : preset === "custom" ? { ...custom, timeZone }
+    : { from: daysAgo(presetRange[preset], timeZone), to: daysAgo(0, timeZone), timeZone };
 
   useEffect(() => {
+    if (!range) return;
     let cancelled = false;
     setError(null);
     getReport(token, workspaceId, range)
@@ -42,10 +55,11 @@ export function Reports({ token, workspaceId, onBack }: Props) {
     return () => {
       cancelled = true;
     };
-    // The range is derived from these three values; listing it would refetch on every render.
-  }, [token, workspaceId, preset, custom.from, custom.to]);
+    // The range is derived from these values; listing it would refetch on every render.
+  }, [token, workspaceId, timeZone, preset, custom?.from, custom?.to]);
 
   async function download() {
+    if (!range) return;
     setIsExporting(true);
     try {
       const file = await ordersCsv(token, workspaceId, range);
@@ -93,7 +107,7 @@ export function Reports({ token, workspaceId, onBack }: Props) {
           </button>
         ))}
       </div>
-      {preset === "custom" && (
+      {preset === "custom" && custom && (
         <div className="grid grid-cols-2 gap-2">
           {(["from", "to"] as const).map((end) => (
             <label key={end} className="flex flex-col gap-1.5 text-[13px] text-text-secondary">
@@ -101,14 +115,14 @@ export function Reports({ token, workspaceId, onBack }: Props) {
               <input
                 type="date"
                 value={custom[end]}
-                onChange={(event) => event.target.value && setCustom((current) => ({ ...current, [end]: event.target.value }))}
+                onChange={(event) => event.target.value && setCustom({ ...custom, [end]: event.target.value })}
                 className="min-h-11 rounded-[var(--radius-control)] bg-surface-recessed px-3 text-[16px] text-text-primary [color-scheme:dark]"
               />
             </label>
           ))}
         </div>
       )}
-      <p className="text-[12px] text-text-muted">{copy.reports.zone(timeZone)}</p>
+      {timeZone && <p className="text-[12px] text-text-muted">{copy.reports.zone(timeZone)}</p>}
 
       {error && <p role="alert" className="rounded-[var(--radius-control)] bg-surface-attention px-4 py-3 text-[14px]">{error}</p>}
       {!result && !error && <p role="status" className="text-[14px] text-text-secondary">{copy.reports.loading}</p>}
@@ -143,7 +157,7 @@ export function Reports({ token, workspaceId, onBack }: Props) {
       )}
 
       <div className="flex flex-col gap-1.5">
-        <PrimaryButton disabled={isExporting} onClick={() => void download()}>{isExporting ? copy.reports.exporting : copy.reports.export}</PrimaryButton>
+        <PrimaryButton disabled={isExporting || !range} onClick={() => void download()}>{isExporting ? copy.reports.exporting : copy.reports.export}</PrimaryButton>
         <p className="text-[12px] text-text-muted">{copy.reports.exportHint}</p>
       </div>
 
