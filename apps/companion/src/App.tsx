@@ -14,9 +14,10 @@ import { Help } from "./Help.tsx";
 import { Pair } from "./Pair.tsx";
 import { Reports } from "./Reports.tsx";
 import { Sessions } from "./Sessions.tsx";
+import { SetupChecklist } from "./SetupChecklist.tsx";
 import { Team } from "./Team.tsx";
 import { TelegramSetup } from "./TelegramSetup.tsx";
-import { launchData, startOrder, startParam } from "./telegram.ts";
+import { launchData, openBot, startOrder, startParam } from "./telegram.ts";
 import { Card, GhostButton, Mark, Page, PrimaryButton } from "./ui.tsx";
 
 const Landing = lazy(() => import("./Landing.tsx"));
@@ -95,6 +96,12 @@ function Signed({ session, view, setView }: { session: Session; view: "home" | "
   if (coordinates) {
     return (
       <>
+        <SetupChecklist
+          token={session.token}
+          workspaceId={coordinates.workspaceId}
+          canPair={pickers.length > 0}
+          onGo={(destination) => (destination === "pair" ? setView("pair") : destination === "bot" ? openBot() : setPage(destination))}
+        />
         <Orders token={session.token} workspaceId={coordinates.workspaceId} onOpen={setOpenOrder} />
         <nav className="grid grid-cols-2 gap-2">
           <GhostButton onClick={() => setPage("catalogue")}>{copy.catalogue.open}</GhostButton>

@@ -185,6 +185,18 @@ export const copy = {
     exporting: "Preparing…",
     exportHint: "One row per order created in these days, times in UTC.",
   },
+  setup: {
+    title: "Set up Stow",
+    progress: (done: number, total: number) => `${done} of ${total} done`,
+    optional: "Optional",
+    steps: {
+      hasCatalogue: { title: "Import your catalogue", body: "Orders can only use SKUs Stow knows, with their bins.", action: "Open catalogue" },
+      hasGroup: { title: "Connect your work group", body: "Add the bot to the group and send /stow_connect there.", action: "Telegram setup" },
+      hasPicker: { title: "Invite a picker", body: "Send /invite picker to the bot and forward the link. Skip this if you pick yourself.", action: "Open the bot" },
+      hasGlasses: { title: "Pair glasses", body: "Open Stow on the Even G2 and enter the code it shows.", action: "Pair glasses" },
+      hasCompletedOrder: { title: "Pick a test order", body: "Send /order in the group, one item per line, and pick it on the glasses.", action: "" },
+    },
+  },
   telegram: {
     open: "Telegram",
     title: "Telegram",
