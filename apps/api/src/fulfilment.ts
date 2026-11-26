@@ -14,12 +14,14 @@ import type pg from "pg";
 import {
   acknowledge,
   acknowledgeResolution,
+  batchLimits,
   claim,
   closeCancelled,
   complete,
   confirm,
   pause,
   plan,
+  planBatch,
   report,
   requestCancel,
   resolve,
@@ -156,6 +158,53 @@ async function execute(client: pg.ClientBase, actor: Actor, commandId: string, c
   return { status: 200, body: { outcome: "APPLIED", seq: String(seq), orderId: after.id, version: String(after.version) } };
 }
 
+/** Shown is an order exactly as the worker's screen showed it. */
+export type Shown = Expected;
+
+export type BatchResult =
+  | { readonly status: 200; readonly body: { readonly outcome: "APPLIED"; readonly seq: string; readonly orderIds: readonly string[] } }
+  | { readonly status: 400; readonly body: { readonly code: "BATCH_SIZE" } }
+  | { readonly status: 403; readonly body: { readonly code: "ROLE_REQUIRED" } }
+  | { readonly status: 404; readonly body: { readonly code: "NOT_FOUND" } }
+  | { readonly status: 409; readonly body: { readonly code: Exclude<Rejection, "NO_CHANGE"> | "IDEMPOTENCY_CONFLICT" } };
+
+const totes = ["A", "B", "C", "D", "E"] as const;
+
+/**
+ * startBatch claims two to five queued orders for one picker, all or none,
+ * each into its own tote in the order offered. Every claim is checked before
+ * any is written, so a batch never starts with an order someone else took.
+ */
+export async function startBatch(pool: pg.Pool, actor: Actor, commandId: string, shown: readonly Shown[]): Promise<BatchResult> {
+  if (actor.role !== "OWNER" && actor.role !== "PICKER") return { status: 403, body: { code: "ROLE_REQUIRED" } };
+  const isDistinct = new Set(shown.map((order) => order.orderId)).size === shown.length;
+  if (shown.length < batchLimits.min || shown.length > batchLimits.max || !isDistinct) return { status: 400, body: { code: "BATCH_SIZE" } };
+  return transaction(pool, (client) =>
+    once(client, actor, commandId, hashCommand({ type: "START_BATCH", shown }), async (): Promise<BatchResult> => {
+      const busy = await client.query("select 1 from assignments where workspace_id = $1 and worker_id = $2 and released_at is null limit 1", [actor.workspaceId, actor.memberId]);
+      if (busy.rowCount) return { status: 409, body: { code: "ASSIGNMENT_CONFLICT" } };
+      const claims = [];
+      for (const [index, order] of shown.entries()) {
+        const before = await loadOrder(client, actor.workspaceId, order.orderId);
+        if (!before) return { status: 404, body: { code: "NOT_FOUND" } };
+        const command = { type: "CLAIM_ORDER", ...order, toteId: totes[index]! } as const;
+        const outcome = claim(before, actor.memberId, command.toteId, order);
+        if (!outcome.ok) return { status: 409, body: { code: outcome.code === "NO_CHANGE" ? "ASSIGNMENT_CONFLICT" : outcome.code } };
+        claims.push({ before, after: outcome.order, command });
+      }
+      let seq = "";
+      for (const { before, after, command } of claims) {
+        await saveOrder(client, actor, before, after, command, new Map());
+        const payload = { ...eventPayload(command, after), batchSize: claims.length };
+        const event = { orderId: after.id, type: eventType(command), actorId: actor.memberId, commandId, revision: after.revision, version: after.version, payload };
+        seq = String(await appendEvent(client, actor.workspaceId, event));
+        await queueStatusUpdate(client, actor.workspaceId, after.id, after.version);
+      }
+      return { status: 200, body: { outcome: "APPLIED", seq, orderIds: claims.map(({ after }) => after.id) } };
+    }),
+  );
+}
+
 type Product = { id: string; sku: string; name: string; bin: string | null; route_rank: number };
 
 function skusIn(command: Command): string[] {
@@ -263,9 +312,19 @@ export type Completed = {
   readonly delivery: "SENT" | "PENDING" | "UNCERTAIN" | "FAILED" | "NOT_REQUIRED";
 };
 
+/** Tote is one order a worker is carrying in a batch, with its progress. */
+export type Tote = { readonly orderId: string; readonly ref: string; readonly toteId: string | null; readonly picked: number; readonly requested: number };
+
+/** Queued is an order waiting for a picker, as a batch offer shows it. */
+export type Queued = { readonly orderId: string; readonly ref: string; readonly revision: number; readonly version: string };
+
 /** WorkerView is the order a worker should see now, what to do with it, and why it changed. */
 export type WorkerView = {
   readonly order: Order | null;
+  /** Every order the worker carries, when there is more than one. */
+  readonly totes: readonly Tote[];
+  /** Queued orders a worker with nothing in hand may start together, when there are at least two. */
+  readonly batchOffer: readonly Queued[];
   readonly plan: Plan | { readonly kind: "QUEUE_EMPTY" };
   readonly cursor: string;
   readonly changes: readonly TargetChange[];
@@ -276,41 +335,56 @@ export type WorkerView = {
 };
 
 /**
- * workerView finds the worker's live order, or else the next queued one to
- * offer, with what the worker needs to understand a change. It reads in one
- * snapshot so the cursor matches the state returned.
+ * workerView finds what the worker should do next across every order they
+ * carry, or else the next queued order to offer, with what the worker needs
+ * to understand a change. It reads in one snapshot so the cursor matches the
+ * state returned.
  */
 export async function workerView(pool: pg.Pool, workspaceId: string, workerId: string): Promise<WorkerView> {
   return transaction(pool, async (client) => {
     const cursor = await client.query<{ event_seq: string }>("select event_seq from workspaces where id = $1", [workspaceId]);
-    const current = await client.query<{ order_id: string }>(
+    const live = await client.query<{ order_id: string }>(
       `select a.order_id from assignments a join orders o on o.id = a.order_id
        where a.workspace_id = $1 and a.worker_id = $2 and a.released_at is null and o.terminal is null
-       order by a.created_at limit 1`,
-      [workspaceId, workerId],
+       order by a.tote_id, a.created_at limit $3`,
+      [workspaceId, workerId, batchLimits.max],
     );
-    const queued = current.rows[0]
-      ? current
-      : await client.query<{ order_id: string }>(
-          `select o.id as order_id from orders o
-           where o.workspace_id = $1 and o.terminal is null
-             and not exists (select 1 from assignments a where a.order_id = o.id and a.released_at is null)
-           order by o.priority desc, o.created_at, o.id limit 1`,
-          [workspaceId],
-        );
-    const orderId = queued.rows[0]?.order_id;
-    const order = orderId ? await loadOrder(client, workspaceId, orderId, "read") : null;
-    const next = order ? plan(order, workerId) : ({ kind: "QUEUE_EMPTY" } as const);
+    const carried: Order[] = [];
+    for (const { order_id } of live.rows) carried.push((await loadOrder(client, workspaceId, order_id, "read"))!);
+    const queued =
+      carried.length > 0
+        ? []
+        : (
+            await client.query<{ id: string; ref: string; revision: number; version: string }>(
+              `select o.id, o.ref, o.revision, o.version from orders o
+               where o.workspace_id = $1 and o.terminal is null
+                 and not exists (select 1 from assignments a where a.order_id = o.id and a.released_at is null)
+               order by o.priority desc, o.created_at, o.id limit $2`,
+              [workspaceId, batchLimits.max],
+            )
+          ).rows;
+    const offered = queued[0] ? await loadOrder(client, workspaceId, queued[0].id, "read") : null;
+    const step = carried.length > 0 ? planBatch(carried, workerId) : null;
+    const order = step ? carried.find((candidate) => candidate.id === step.orderId)! : offered;
+    const next = step ? step.plan : offered ? plan(offered, workerId) : ({ kind: "QUEUE_EMPTY" } as const);
     return {
       order,
       plan: next,
       cursor: cursor.rows[0]?.event_seq ?? "0",
+      totes: carried.length > 1 ? carried.map(tote) : [],
+      batchOffer: queued.length >= batchLimits.min ? queued.map((row) => ({ orderId: row.id, ref: row.ref, revision: row.revision, version: row.version })) : [],
       changes: order && order.assignment && (next.kind === "REVISION_ACK" || next.kind === "RESOLUTION_ACK") ? await changesSince(client, order, order.assignment.ackRevision) : [],
       decision: order && next.kind === "RESOLUTION_ACK" ? await decisionOn(client, workspaceId, next.exceptionId) : null,
-      lastCompleted: current.rows[0] ? null : await lastCompleted(client, workspaceId, workerId),
-      note: current.rows[0] && orderId ? await unreadNote(client, orderId) : null,
+      lastCompleted: carried.length > 0 ? null : await lastCompleted(client, workspaceId, workerId),
+      note: step ? await unreadNote(client, step.orderId) : null,
     };
   }, "repeatable read");
+}
+
+function tote(order: Order): Tote {
+  const picked = order.lines.reduce((sum, line) => sum + Math.min(line.picked, line.requested), 0);
+  const requested = order.lines.reduce((sum, line) => sum + line.requested, 0);
+  return { orderId: order.id, ref: order.ref, toteId: order.assignment?.toteId ?? null, picked, requested };
 }
 
 // Collapses every revision after the one the worker acknowledged into a
