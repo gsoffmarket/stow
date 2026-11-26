@@ -11,10 +11,14 @@ import type pg from "pg";
 import { z } from "zod";
 import { outstandingPick, outstandingReturn, type Order, type Task } from "@stow/order-engine";
 import { runCommand, workerView, type Command, type Role } from "./fulfilment.ts";
+import { memberships, sessionUser, startSession, verifyLaunchData } from "./identity.ts";
 
 export type HttpOptions = {
   readonly pool: pg.Pool;
   readonly taskTokenSecret: string;
+  /** Needed to verify Mini App launch data; Mini App routes answer 503 without it. */
+  readonly botToken: string | null;
+  readonly now: () => Date;
   readonly corsAllowedOrigins: readonly string[];
   readonly logger: boolean;
 };
@@ -83,6 +87,22 @@ export function buildHttp(options: HttpOptions): FastifyInstance {
     } catch {
       return fail(reply, request, 503, "SERVICE_UNAVAILABLE");
     }
+  });
+
+  app.post("/v1/telegram/miniapp/session", async (request, reply) => {
+    if (!options.botToken) return fail(reply, request, 503, "SERVICE_UNAVAILABLE");
+    const parsed = z.strictObject({ initData: z.string().min(1).max(4096) }).safeParse(request.body);
+    if (!parsed.success) return fail(reply, request, 400, "INVALID_INPUT");
+    const check = verifyLaunchData(parsed.data.initData, options.botToken, Math.floor(options.now().getTime() / 1000));
+    if (!check.ok) return fail(reply, request, 401, "AUTH_REQUIRED");
+    const session = await startSession(options.pool, check.user);
+    return ok(reply, request, { ...session, user: check.user, memberships: await memberships(options.pool, check.user.id) });
+  });
+
+  app.get("/v1/me", async (request, reply) => {
+    const telegramUserId = await miniAppUser(request, reply, options.pool);
+    if (!telegramUserId) return reply;
+    return ok(reply, request, { telegramUserId, memberships: await memberships(options.pool, telegramUserId) });
   });
 
   app.get<{ Params: { wid: string } }>("/v1/workspaces/:wid/worker/snapshot", async (request, reply) => {
@@ -167,6 +187,15 @@ async function authenticate(request: FastifyRequest<{ Params: { wid: string } }>
     return null;
   }
   return { workspaceId: device.workspace_id, memberId: device.member_id, role: device.role };
+}
+
+// Mini App requests carry their session as a bearer token, like devices, but
+// resolve to a Telegram account; workspace access is checked per route.
+async function miniAppUser(request: FastifyRequest, reply: FastifyReply, pool: pg.Pool): Promise<string | null> {
+  const token = /^Bearer ([A-Za-z0-9_-]{32,128})$/.exec(request.headers.authorization ?? "")?.[1];
+  const user = token ? await sessionUser(pool, token) : null;
+  if (!user) fail(reply, request, 401, "AUTH_REQUIRED");
+  return user;
 }
 
 /** hashToken is how device tokens are stored and looked up. */
