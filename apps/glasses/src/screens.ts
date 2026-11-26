@@ -60,6 +60,8 @@ export type Snapshot = {
     readonly units: number;
     readonly delivery: "SENT" | "PENDING" | "UNCERTAIN" | "FAILED" | "NOT_REQUIRED";
   } | null;
+  readonly note: { readonly id: string; readonly body: string; readonly author: string } | null;
+  readonly quickReplies: readonly { readonly id: string; readonly text: string }[];
 };
 
 /**
@@ -72,7 +74,9 @@ export type ReportType = "SHORTAGE" | "DAMAGED" | "LOCATION_MISMATCH" | "RETURN_
 
 /** Action is what a tap does on the current screen. */
 export type Action =
-  | { readonly type: "CLAIM" | "COMPLETE" | "REFRESH" | "ACK_REVISION" | "PAUSE" | "RESUME" | "CLOSE_CANCELLED" | "DISMISS" | "BACK" }
+  | { readonly type: "CLAIM" | "COMPLETE" | "REFRESH" | "ACK_REVISION" | "PAUSE" | "RESUME" | "CLOSE_CANCELLED" | "DISMISS" | "BACK" | "REPLIES" }
+  | { readonly type: "MARK_READ"; readonly noteId: string }
+  | { readonly type: "REPLY"; readonly replyId: string; readonly noteId: string | null }
   | { readonly type: "CONFIRM"; readonly quantity: number }
   | { readonly type: "ACK_RESOLUTION"; readonly exceptionId: string }
   | { readonly type: "REPORT"; readonly report: ReportType };
@@ -95,24 +99,36 @@ function screen(header: string, body: string, footer: string, primary: Action | 
   return { header, body, footer, primary, options };
 }
 
+const messageGroup: Option = { label: "MESSAGE GROUP", action: { type: "REPLIES" } };
+
 const pickOptions: readonly Option[] = [
   { label: "REPORT SHORTAGE", action: { type: "REPORT", report: "SHORTAGE" } },
   { label: "DAMAGED ITEM", action: { type: "REPORT", report: "DAMAGED" } },
   { label: "WRONG LOCATION", action: { type: "REPORT", report: "LOCATION_MISMATCH" } },
+  messageGroup,
   { label: "PAUSE ORDER", action: { type: "PAUSE" } },
 ];
 
 const returnOptions: readonly Option[] = [
   { label: "CANNOT RETURN", action: { type: "REPORT", report: "RETURN_BLOCKED" } },
+  messageGroup,
   { label: "PAUSE ORDER", action: { type: "PAUSE" } },
 ];
+
+/**
+ * replyOptions turns the server's quick replies into More-screen lines. A
+ * reply sent from a note also marks that note read.
+ */
+export function replyOptions(snapshot: Snapshot, noteId: string | null): Option[] {
+  return snapshot.quickReplies.map((reply) => ({ label: reply.text.toUpperCase(), action: { type: "REPLY", replyId: reply.id, noteId } }));
+}
 
 /**
  * moreScreen lists a screen's options with a cursor. The last line is always
  * Back, so a worker who swiped by accident can get out with one tap.
  */
-export function moreScreen(base: Screen, ref: string, cursor: number): Screen {
-  const options = [...base.options, { label: "BACK", action: { type: "BACK" } as Action }];
+export function moreScreen(choices: readonly Option[], ref: string, cursor: number): Screen {
+  const options = [...choices, { label: "BACK", action: { type: "BACK" } as Action }];
   const at = ((cursor % options.length) + options.length) % options.length;
   const body = options.map((option, index) => `${index === at ? ">" : " "} ${option.label}`).join("\n");
   return screen(`${ref}   MORE`, body, "SWIPE TO MOVE · TAP TO CHOOSE", options[at]!.action);
@@ -132,6 +148,12 @@ export function screenFor(snapshot: Snapshot | null, link: Link, dismissedRef: s
   if (!snapshot) return screen("STOW", "CONNECTING…", "", null);
 
   const plan = snapshot.plan;
+  // A coordinator note waits for a safe moment: never over saving or an
+  // unknown outcome (handled above), and only on the worker's own order.
+  if (snapshot.note && snapshot.order) {
+    const note = snapshot.note;
+    return screen(`${ref}   NOTE · ${note.author.toUpperCase()}`, note.body, "TAP: GOT IT · SWIPE: REPLY", { type: "MARK_READ", noteId: note.id }, replyOptions(snapshot, note.id));
+  }
   const done = snapshot.lastCompleted;
   if (done && done.ref !== dismissedRef && (plan.kind === "QUEUE_EMPTY" || plan.kind === "OFFER")) {
     const telegram = { SENT: "SENT", PENDING: "PENDING", UNCERTAIN: "NOT CONFIRMED", FAILED: "NOT SENT", NOT_REQUIRED: "NOT USED" }[done.delivery];
