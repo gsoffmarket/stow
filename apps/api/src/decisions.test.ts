@@ -82,13 +82,24 @@ async function scene() {
   return { workspaceId, chatId, fromId, picker, orderId, ref: view.order!.ref };
 }
 
-const buttonData = (call: Call | undefined, label: string) => call?.buttons?.flat().find((button) => button.text.startsWith(label))?.data ?? "";
+const buttonData = (call: Call | undefined, label: string) =>
+  call?.buttons?.flat().flatMap((button) => ("data" in button && button.text.startsWith(label) ? [button.data] : []))[0] ?? "";
 
 async function order(orderId: string) {
   const { rows } = await db.pool.query("select revision, is_cancel_requested from orders where id = $1", [orderId]);
   const lines = await db.pool.query("select sku_snapshot as sku, requested_qty as requested from order_lines where order_id = $1 order by creation_index", [orderId]);
   return { ...rows[0], lines: lines.rows };
 }
+
+describe("status message", () => {
+  test("carries a link that opens the order in the Mini App", async () => {
+    const s = await scene();
+    await runCommand(db.pool, s.picker, randomUUID(), { type: "PAUSE_ORDER", orderId: s.orderId, revision: 1, version: 3 });
+    await deliverOutbox(telegram);
+    const edit = calls.find((call) => call.method === "edit");
+    expect(edit?.buttons).toEqual([[{ text: "Open in Stow", url: `https://t.me/stow_test_bot?startapp=order_${s.orderId}` }]]);
+  });
+});
 
 describe("revise in Telegram", () => {
   test("previews the change with the return it causes, and applies it on Confirm", async () => {

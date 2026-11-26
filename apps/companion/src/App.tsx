@@ -1,5 +1,6 @@
 // The Mini App shell: sign in with Telegram's launch data, then show what
-// this person can do. Opening it with ?startapp=pair goes straight to pairing.
+// this person can do. Opening it with ?startapp=pair goes straight to pairing,
+// and ?startapp=order_<id> straight to that order.
 // Opened in a browser instead of Telegram, the same address is Stow's public
 // landing page, loaded separately so the Mini App stays small.
 
@@ -9,10 +10,11 @@ import { copy } from "./copy.ts";
 import { Catalogue } from "./Catalogue.tsx";
 import { OrderDetail } from "./OrderDetail.tsx";
 import { Orders } from "./Orders.tsx";
+import { Help } from "./Help.tsx";
 import { Pair } from "./Pair.tsx";
 import { Reports } from "./Reports.tsx";
 import { Team } from "./Team.tsx";
-import { launchData, startParam } from "./telegram.ts";
+import { launchData, startOrder, startParam } from "./telegram.ts";
 import { Card, GhostButton, Mark, Page, PrimaryButton } from "./ui.tsx";
 
 const Landing = lazy(() => import("./Landing.tsx"));
@@ -62,12 +64,14 @@ export function App() {
 }
 
 function Signed({ session, view, setView }: { session: Session; view: "home" | "pair"; setView: (view: "home" | "pair") => void }) {
-  const [openOrder, setOpenOrder] = useState<string | null>(null);
-  const [page, setPage] = useState<"orders" | "catalogue" | "team" | "reports">("orders");
+  // An "Open in Stow" link from a group status message opens straight on its order.
+  const [openOrder, setOpenOrder] = useState<string | null>(startOrder);
+  const [page, setPage] = useState<"orders" | "catalogue" | "team" | "reports" | "help">("orders");
   const pickers = session.memberships.filter((m) => m.role === "PICKER" || m.role === "OWNER");
   const coordinates = session.memberships.find((m) => m.role === "COORDINATOR" || m.role === "OWNER");
   if (session.memberships.length === 0) return <Message title={copy.noWorkspace.title} body={copy.noWorkspace.body} />;
   if (view === "pair" && pickers.length > 0) return <Pair token={session.token} workspaces={pickers} onBack={() => setView("home")} />;
+  if (page === "help") return <Help onBack={() => setPage("orders")} />;
   if (coordinates && page === "catalogue") {
     return <Catalogue token={session.token} workspaceId={coordinates.workspaceId} onBack={() => setPage("orders")} />;
   }
@@ -88,6 +92,7 @@ function Signed({ session, view, setView }: { session: Session; view: "home" | "
           <GhostButton onClick={() => setPage("catalogue")}>{copy.catalogue.open}</GhostButton>
           <GhostButton onClick={() => setPage("team")}>{copy.team.open}</GhostButton>
           <GhostButton onClick={() => setPage("reports")}>{copy.reports.open}</GhostButton>
+          <GhostButton onClick={() => setPage("help")}>{copy.help.open}</GhostButton>
           {pickers.length > 0 && <GhostButton onClick={() => setView("pair")}>{copy.orders.pairGlasses}</GhostButton>}
         </nav>
       </>
@@ -110,6 +115,7 @@ function Signed({ session, view, setView }: { session: Session; view: "home" | "
           <p className="text-[13px] text-text-muted">{copy.home.pairHint}</p>
         </div>
       )}
+      <GhostButton onClick={() => setPage("help")}>{copy.help.open}</GhostButton>
     </Card>
   );
 }

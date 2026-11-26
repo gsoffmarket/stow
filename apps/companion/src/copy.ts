@@ -112,6 +112,48 @@ export const copy = {
       waiting: "Waiting for the picker to acknowledge.",
     },
   },
+  help: {
+    open: "Help",
+    title: "Help",
+    back: "Back",
+    sections: [
+      {
+        title: "In the work group",
+        rows: [
+          ["/order REF", "then one line per item: SKU x QTY. The reference is optional."],
+          ["/revise REF SKU QTY", "sets a new target; 0 removes it. Confirm or Discard the preview."],
+          ["/cancel REF reason", "cancels an order. Anything already picked is returned first."],
+          ["/resolve REF SKU QTY", "substitutes a SKU for an item the picker reported."],
+          ["/note REF text", "shows a note on the picker's glasses. Replying to the order's status message does the same."],
+          ["Resume, Reduce, Cancel", "the buttons under a picker's problem report decide it."],
+        ],
+      },
+      {
+        title: "On the glasses",
+        rows: [
+          ["Tap", "does what the bottom line says: confirm, acknowledge, start or retry."],
+          ["Swipe", "opens More: pick fewer, report a problem, message the group, pause or release."],
+          ["Double tap", "leaves Stow. Your orders stay assigned to you."],
+          ["Top line", "the order, its tote and progress, so you always know where an item goes."],
+        ],
+      },
+      {
+        title: "When a screen says stop",
+        rows: [
+          ["STOP — ORDER CHANGED", "the coordinator changed the order. Returns come first; do them before picking."],
+          ["NOT SAVED", "the order changed while you tapped. Recheck the tote, then tap for the latest."],
+          ["OUTCOME UNKNOWN", "the connection dropped mid-save. Recheck the tote before anything else, then tap."],
+          ["OFFLINE", "stop picking until Stow reconnects; nothing you do is saved meanwhile."],
+          ["TELEGRAM: NOT CONFIRMED", "your work is saved; Stow could not confirm the group saw the update."],
+        ],
+      },
+    ],
+    safetyTitle: "Staying safe",
+    safety: "Stop moving before you read the glasses, and keep your eyes on the path when walking. Stow records what you confirm; it does not check the goods, so look at what goes in the tote.",
+    supportTitle: "Something wrong?",
+    support: "Report it as an issue on GitHub with what you saw and when. There is no live support desk.",
+    supportLink: "Open an issue",
+  },
   reports: {
     open: "Reports",
     title: "Reports",
