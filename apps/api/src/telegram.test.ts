@@ -1,22 +1,23 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest";
-import type { BotApi, Message, Result, Update } from "@stow/telegram/botapi";
+import type { BotApi, Button, Message, Result, Update } from "@stow/telegram/botapi";
 import { commit } from "./catalogue.ts";
+import { confirmDraft, discardDraft, draft, drafts } from "./drafts.ts";
 import { createTestDatabase, type TestDatabase } from "./db/testdb.ts";
 import { runCommand, workerView } from "./fulfilment.ts";
 import { deliverOutbox, hashCode, processInbox, receive, type Telegram } from "./telegram.ts";
 
 // Telegram is a third-party boundary: this stand-in records calls and answers
 // with whatever the test sets next.
-type Call = { method: "send" | "edit"; chatId: string; text: string; replyTo?: number | undefined; messageId?: string };
+type Call = { method: "send" | "edit"; chatId: string; text: string; replyTo?: number | undefined; messageId?: string; buttons?: readonly (readonly Button[])[] | undefined };
 let calls: Call[];
 let nextSend: () => Result<Message>;
 let nextEdit: () => Result<true>;
 const api: BotApi = {
   getMe: async () => ({ kind: "ok", value: { id: 1, username: "stow_test_bot" } }),
   getUpdates: async () => ({ kind: "ok", value: [] }),
-  sendMessage: async (chatId, text, replyTo) => {
-    calls.push({ method: "send", chatId, text, replyTo });
+  sendMessage: async (chatId, text, replyTo, buttons) => {
+    calls.push({ method: "send", chatId, text, replyTo, buttons });
     return nextSend();
   },
   editMessageText: async (chatId, messageId, text) => {
@@ -104,7 +105,13 @@ describe("order intake", () => {
 
     await deliverOutbox(telegram);
     expect(calls).toEqual([
-      { method: "send", chatId: String(ws.chatId), text: "ST-9 · QUEUED · rev 1\nTS-BLK-M: 0/3\nCP-WHT: 0/2\n2 lines / 5 units. Awaiting picker.", replyTo: order.message!.message_id },
+      {
+        method: "send",
+        chatId: String(ws.chatId),
+        text: "ST-9 · QUEUED · rev 1\nTS-BLK-M: 0/3\nCP-WHT: 0/2\n2 lines / 5 units. Awaiting picker.",
+        replyTo: order.message!.message_id,
+        buttons: [[{ text: "Open in Stow", url: expect.stringMatching(/^https:\/\/t\.me\/stow_test_bot\?startapp=order_[0-9a-f-]{36}$/) }]],
+      },
     ]);
   });
 
@@ -139,25 +146,78 @@ describe("order intake", () => {
     else expect(calls).toEqual([]);
   });
 
-  test("bad lines and unknown SKUs are answered with what to fix", async () => {
+  test("bad lines are answered with what to fix", async () => {
     const ws = await boundWorkspace();
     await send(update(ws.chatId, ws.fromId, "/order\nTS-BLK-M x 0"));
     expect(calls.at(-1)?.text).toBe("Order not created:\nline 1: quantity must be 1 to 10,000");
-    await send(update(ws.chatId, ws.fromId, "/order\nNOPE x 1"));
-    expect(calls.at(-1)?.text).toBe('Order not created:\nline 1: "NOPE" is not in the catalogue');
     expect(await orderCount(ws.workspaceId)).toBe(0);
   });
 
-  test("items may be typed by alias; one several products answer to, or a product named twice, is sent back", async () => {
+  test("items may be typed by alias, and a product named twice is sent back", async () => {
     const ws = await boundWorkspace();
-    await commit(db.pool, ws.workspaceId, "sku,name,aliases\nTS-BLK-M,Black T-shirt,black tee\nCP-WHT,White cap,cap\nCP-GRY,Grey cap,cap\n", true);
-    await send(update(ws.chatId, ws.fromId, "/order\nBlack Tee x 2\ncap x 1\nTS-BLK-M x 1"));
-    expect(calls.at(-1)?.text).toBe('Order not created:\nline 2: "cap" could be CP-GRY or CP-WHT\nline 3: "TS-BLK-M" is TS-BLK-M again, as on line 1');
+    await commit(db.pool, ws.workspaceId, "sku,name,aliases\nTS-BLK-M,Black T-shirt,black tee\nCP-WHT,White cap,cap\n", true);
+    await send(update(ws.chatId, ws.fromId, "/order\nBlack Tee x 2\nTS-BLK-M x 1"));
+    expect(calls.at(-1)?.text).toBe('Order not created:\nline 2: "TS-BLK-M" is TS-BLK-M again, as on line 1');
     expect(await orderCount(ws.workspaceId)).toBe(0);
 
     await send(update(ws.chatId, ws.fromId, "/order\nBlack Tee x 2\ncp-wht x 1"));
     const lines = await db.pool.query("select sku_snapshot, requested_qty from order_lines l join orders o on o.id = l.order_id where o.workspace_id = $1 order by l.creation_index", [ws.workspaceId]);
     expect(lines.rows).toEqual([{ sku_snapshot: "TS-BLK-M", requested_qty: 2 }, { sku_snapshot: "CP-WHT", requested_qty: 1 }]);
+  });
+
+  test("unknown or ambiguous items become a draft nobody can pick, settled in Stow into exactly one order", async () => {
+    const ws = await boundWorkspace();
+    await commit(db.pool, ws.workspaceId, "sku,name,aliases\nCP-WHT,White cap,cap\nCP-GRY,Grey cap,cap\n", true);
+    const typed = update(ws.chatId, ws.fromId, "/order LIVE-9\nTS-BLK-M x 2\ncap x 1\nblue mug x 3");
+    await send(typed, typed);
+
+    expect(await orderCount(ws.workspaceId)).toBe(0);
+    const [saved, ...others] = await drafts(db.pool, ws.workspaceId);
+    expect(others).toEqual([]);
+    expect({ ref: saved!.ref, lines: saved!.lines }).toEqual({
+      ref: "LIVE-9",
+      lines: [
+        { item: "TS-BLK-M", quantity: 2, sku: "TS-BLK-M", candidates: [] },
+        { item: "cap", quantity: 1, sku: null, candidates: ["CP-GRY", "CP-WHT"] },
+        { item: "blue mug", quantity: 3, sku: null, candidates: [] },
+      ],
+    });
+    expect(calls).toEqual([
+      {
+        method: "send",
+        chatId: String(ws.chatId),
+        text: 'Saved as a draft. Nobody can pick it yet:\nline 2: "cap" could be CP-GRY or CP-WHT\nline 3: "blue mug" is not in the catalogue\nChoose the products in Stow, then confirm.',
+        replyTo: typed.message!.message_id,
+        buttons: [[{ text: "Fix in Stow", url: `https://t.me/stow_test_bot?startapp=draft_${saved!.id}` }]],
+      },
+    ]);
+
+    const coordinator = { workspaceId: ws.workspaceId, memberId: ws.coordinator, role: "COORDINATOR" as const };
+    const lines = [{ sku: "TS-BLK-M", quantity: 2 }, { sku: "CP-WHT", quantity: 1 }];
+    const confirmed = await confirmDraft(db.pool, coordinator, saved!.id, lines);
+    expect(confirmed).toMatchObject({ ok: true, ref: "LIVE-9" });
+    expect(await confirmDraft(db.pool, coordinator, saved!.id, lines)).toEqual(confirmed);
+    expect(await orderCount(ws.workspaceId)).toBe(1);
+    expect(await draft(db.pool, ws.workspaceId, saved!.id)).toBeNull();
+
+    calls = [];
+    await deliverOutbox(telegram);
+    const status = calls.filter((call) => call.chatId === String(ws.chatId));
+    expect(status).toMatchObject([{ method: "send", replyTo: typed.message!.message_id }]);
+    expect(status[0]!.text).toMatch(/^LIVE-9 · QUEUED/);
+  });
+
+  test("only coordinators settle drafts, and a discarded draft cannot be confirmed", async () => {
+    const ws = await boundWorkspace();
+    await send(update(ws.chatId, ws.fromId, "/order\nblue mug x 1"));
+    const [saved] = await drafts(db.pool, ws.workspaceId);
+    const picker = { workspaceId: ws.workspaceId, memberId: ws.picker, role: "PICKER" as const };
+    const coordinator = { workspaceId: ws.workspaceId, memberId: ws.coordinator, role: "COORDINATOR" as const };
+    expect(await confirmDraft(db.pool, picker, saved!.id, [{ sku: "CP-WHT", quantity: 1 }])).toEqual({ ok: false, code: "ROLE_REQUIRED" });
+    expect(await discardDraft(db.pool, picker, saved!.id)).toBe("ROLE_REQUIRED");
+    expect(await discardDraft(db.pool, coordinator, saved!.id)).toBe("DISCARDED");
+    expect(await confirmDraft(db.pool, coordinator, saved!.id, [{ sku: "CP-WHT", quantity: 1 }])).toEqual({ ok: false, code: "NOT_FOUND" });
+    expect(await orderCount(ws.workspaceId)).toBe(0);
   });
 
   test("commands in one batch run in the order they were sent", async () => {

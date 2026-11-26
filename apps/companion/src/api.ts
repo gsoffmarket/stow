@@ -220,7 +220,27 @@ export function listPickers(token: string, workspaceId: string): Promise<{ picke
   return call(`/v1/workspaces/${workspaceId}/pickers`, { method: "GET", token });
 }
 
-export type Product = { sku: string; name: string; bin: string | null; routeRank: number };
+export type Product = { sku: string; name: string; bin: string | null; routeRank: number; aliases: string[] };
+
+/** DraftLine is one line as typed in the group: its SKU once it names one product, and what an ambiguous name could mean. */
+export type DraftLine = { item: string; quantity: number; sku: string | null; candidates: string[] };
+export type Draft = { id: string; ref: string | null; createdBy: string; createdAt: string; expiresAt: string; lines: DraftLine[] };
+
+export function listDrafts(token: string, workspaceId: string): Promise<{ drafts: Draft[] }> {
+  return call(`/v1/workspaces/${workspaceId}/drafts`, { method: "GET", token });
+}
+
+export function getDraft(token: string, workspaceId: string, draftId: string): Promise<Draft> {
+  return call(`/v1/workspaces/${workspaceId}/drafts/${draftId}`, { method: "GET", token });
+}
+
+export function confirmDraft(token: string, workspaceId: string, draftId: string, lines: { sku: string; quantity: number }[]): Promise<{ orderId: string; ref: string }> {
+  return call(`/v1/workspaces/${workspaceId}/drafts/${draftId}/confirm`, { method: "POST", token, body: { lines } });
+}
+
+export function discardDraft(token: string, workspaceId: string, draftId: string): Promise<{ discarded: true }> {
+  return call(`/v1/workspaces/${workspaceId}/drafts/${draftId}/discard`, { method: "POST", token });
+}
 export type RowError = { line: number; field: string; problem: string };
 export type PreviewRow = { line: number; sku: string; name: string; bin: string | null; routeRank: number; fate: "NEW" | "UPDATE" | "UNCHANGED" };
 

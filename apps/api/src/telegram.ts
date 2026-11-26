@@ -15,6 +15,7 @@ import type { BotApi, Button, CallbackQuery, Message, Result, Update } from "@st
 import { parseCommand, parseOrder, parseRefAndText, parseRevise, type Command as BotCommand, type OrderError } from "@stow/telegram/commands";
 import { reducedTarget, renderException, renderReply, renderStatus, type ExceptionNotice } from "@stow/telegram/status";
 import { matchItems, type Match } from "./catalogue.ts";
+import { saveDraft } from "./drafts.ts";
 import { postNote } from "./messages.ts";
 import { createOrder, loadOrder, runCommand, transaction, type Command, type CommandResult, type RevisionChange, type Role } from "./fulfilment.ts";
 
@@ -317,13 +318,25 @@ async function intake(telegram: Telegram, message: StoredMessage, command: NonNu
   if (!parsed.ok) return `Order not created:\n${parsed.errors.map(describe).join("\n")}`;
   const matches = await matchItems(telegram.pool, access.workspace_id, parsed.order.lines.map((line) => line.item));
   const resolved = resolveLines(parsed.order.lines, matches);
-  if (!resolved.ok) return `Order not created:\n${resolved.problems.join("\n")}`;
-  const created = await createOrder(telegram.pool, {
+  const source = {
     workspaceId: access.workspace_id,
     createdBy: access.member_id,
     sourceKey: `telegram:${telegram.botAlias}:${message.chatId}:${message.messageId}`,
     connectionId: access.connection_id,
     sourceMessageId: String(message.messageId),
+  };
+  if (!resolved.ok && matches.every((match) => match.kind === "MATCHED")) return `Order not created:\n${resolved.problems.join("\n")}`;
+  if (!resolved.ok) {
+    // Unknown or ambiguous items are a coordinator's call, not a retyping
+    // chore: the order waits as a draft, one tap from being settled.
+    const lines = parsed.order.lines.map((line, index) => ({ ...line, match: matches[index]! }));
+    const draftId = await saveDraft(telegram.pool, { ...source, ref: parsed.order.ref, lines });
+    const text = ["Saved as a draft. Nobody can pick it yet:", ...resolved.problems, "Choose the products in Stow, then confirm."].join("\n");
+    await telegram.api.sendMessage(message.chatId, text, message.messageId, [[{ text: "Fix in Stow", url: appLink(telegram.botUsername, `draft_${draftId}`) }]]);
+    return null;
+  }
+  const created = await createOrder(telegram.pool, {
+    ...source,
     request: { ref: parsed.order.ref, lines: parsed.order.lines.map((line, index) => ({ sku: resolved.skus[index]!, quantity: line.quantity })) },
   });
   if (created.ok) return null; // The status message from the outbox is the confirmation.
@@ -658,11 +671,11 @@ async function recoverExpiredLeases(pool: pg.Pool): Promise<void> {
   );
 }
 
-// Opens the bot's main Mini App on this order. Telegram does not allow
+// Opens the bot's main Mini App at a page: order_<id> or draft_<id>. Telegram does not allow
 // Mini App buttons in groups, so this is a t.me link; it needs the Main Mini
 // App set in BotFather, and opens the bot's chat otherwise.
-function orderLink(botUsername: string, orderId: string): string {
-  return `https://t.me/${botUsername}?startapp=order_${orderId}`;
+function appLink(botUsername: string, start: string): string {
+  return `https://t.me/${botUsername}?startapp=${start}`;
 }
 
 async function deliverStatus(telegram: Telegram, row: DueRow): Promise<void> {
@@ -672,7 +685,7 @@ async function deliverStatus(telegram: Telegram, row: DueRow): Promise<void> {
     return settle(telegram.pool, row.id, "SENT", null);
   }
   const text = renderStatus(state.status);
-  const open = [[{ text: "Open in Stow", url: orderLink(telegram.botUsername, row.order_id) }]];
+  const open = [[{ text: "Open in Stow", url: appLink(telegram.botUsername, `order_${row.order_id}`) }]];
   const result = state.messageId
     ? await telegram.api.editMessageText(row.chat_id, state.messageId, text, open)
     : await telegram.api.sendMessage(row.chat_id, text, state.sourceMessageId ? Number(state.sourceMessageId) : undefined, open);

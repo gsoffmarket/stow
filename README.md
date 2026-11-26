@@ -43,7 +43,7 @@ See [docs/architecture.md](docs/architecture.md) for the codemap, invariants and
 
 | Area | What it does |
 |---|---|
-| **Telegram** | `/setup`, `/stow_connect`, invite links, `/order`; `/revise`, `/cancel` and `/resolve` with preview buttons; shortage messages with Resume / Reduce / Cancel; one live status message per order; notes and picker replies |
+| **Telegram** | `/setup`, `/stow_connect`, invite links, `/order` by SKU or alias, with unclear orders kept as drafts to settle in the Mini App; `/revise`, `/cancel` and `/resolve` with preview buttons; shortage messages with Resume / Reduce / Cancel; one live status message per order; notes and picker replies |
 | **Glasses** | Pick, return, partial quantity, batches of 2–5 orders with the tote mapping shown before starting, release an order back to the queue, opt-in auto-next, revision and decision acknowledgements, report a problem, pause, coordinator notes, quick replies, a Saved screen with the Telegram delivery state, pairing |
 | **Mini App** | Telegram sign-in, glasses pairing, a setup checklist, and a coordinator console: orders with search and paging, new orders from the catalogue, assigning a picker, detail, revise, cancel, resolve, notes, timeline, CSV catalogue import and export, team roles and revocation, live glasses sessions, connected Telegram groups, reports with CSV export, and settings for time zone and history retention |
 | **Engine** | Batch planning across totes in walking order, revisions that never overwrite picked work, mandatory returns, cancellation with full return, one open problem per order, idempotent commands, stale-command rejection |

@@ -39,6 +39,11 @@ export function startOrder(): string | null {
   return /^order_([0-9a-f-]{36})$/.exec(startParam() ?? "")?.[1] ?? null;
 }
 
+/** startDraft is the draft a "Fix in Stow" link names, or null. */
+export function startDraft(): string | null {
+  return /^draft_([0-9a-f-]{36})$/.exec(startParam() ?? "")?.[1] ?? null;
+}
+
 /** prepare tells Telegram the app is ready and paints its frame in Stow's canvas color. */
 export function prepare(canvas: string): void {
   const webApp = app();

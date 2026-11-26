@@ -59,11 +59,13 @@ export async function purgeExpired(pool: pg.Pool): Promise<number> {
     const ids = rows.map((row) => row.id);
     if (ids.length > 0) {
       // Children before parents; order_exceptions also points at order_lines.
-      for (const table of ["order_exceptions", "order_messages", "telegram_message_refs", "telegram_outbox", "assignments", "order_revisions", "order_lines", "fulfilment_events"]) {
+      for (const table of ["order_exceptions", "order_messages", "telegram_message_refs", "telegram_outbox", "assignments", "order_revisions", "order_lines", "fulfilment_events", "order_drafts"]) {
         await client.query(`delete from ${table} where order_id = any($1::uuid[])`, [ids]);
       }
       await client.query("delete from orders where id = any($1::uuid[])", [ids]);
     }
+    // Drafts never became orders, or did and are kept only as a link to one; neither is needed after a week.
+    await client.query("delete from order_drafts where expires_at < now()");
     await client.query(
       `delete from command_results c using workspaces w
        where w.id = c.workspace_id and w.retention_days is not null and c.created_at < now() - make_interval(days => w.retention_days)`,

@@ -2,6 +2,7 @@ import { createHmac, randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { createTestDatabase, type TestDatabase } from "./db/testdb.ts";
+import { saveDraft } from "./drafts.ts";
 import { createOrder, runCommand, workerView, type Actor } from "./fulfilment.ts";
 import { buildHttp, hashToken } from "./http.ts";
 
@@ -212,6 +213,31 @@ describe("creating an order from the console", () => {
     const taken = await create({ commandId: randomUUID(), ref: "WEB-9", lines: [{ sku: "CP-WHT", quantity: 1 }] });
     expect({ status: taken.statusCode, code: taken.json().error.code }).toEqual({ status: 409, code: "REF_TAKEN" });
     expect((await create({ commandId: randomUUID(), ref: null, lines: [{ sku: "CP-WHT", quantity: 1 }] }, pickerHeaders)).statusCode).toBe(404);
+  });
+});
+
+describe("drafts in the console", () => {
+  test("lists an open draft, confirms it into one order, and a repeated SKU or a picker is refused", async () => {
+    // Its own coordinator, so the create rate limit is not shared with the tests above.
+    const coord = (await db.pool.query<{ id: string }>("insert into members (workspace_id, display_name, role, telegram_user_id) values ($1, 'Drafts', 'COORDINATOR', '400') returning id", [workspaceId])).rows[0]!.id;
+    const session = await app.inject({ method: "POST", url: "/v1/telegram/miniapp/session", payload: { initData: launchData(400) } });
+    const coordinatorHeaders = { authorization: `Bearer ${session.json().data.token}` };
+    const saved = await saveDraft(db.pool, {
+      workspaceId, createdBy: coord, sourceKey: `test:${randomUUID()}`, connectionId: null, sourceMessageId: null, ref: "DRAFT-1",
+      lines: [{ item: "blue mug", quantity: 2, match: { kind: "UNKNOWN" } }],
+    });
+    const base = `/v1/workspaces/${workspaceId}/drafts`;
+
+    const listed = await app.inject({ method: "GET", url: base, headers: coordinatorHeaders });
+    expect(listed.json().data.drafts).toMatchObject([{ id: saved, ref: "DRAFT-1", createdBy: "Drafts", lines: [{ item: "blue mug", quantity: 2, sku: null, candidates: [] }] }]);
+    expect((await app.inject({ method: "GET", url: `${base}/${saved}`, headers: pickerHeaders })).statusCode).toBe(404);
+
+    const twice = await app.inject({ method: "POST", url: `${base}/${saved}/confirm`, headers: coordinatorHeaders, payload: { lines: [{ sku: "CP-WHT", quantity: 1 }, { sku: "cp-wht", quantity: 1 }] } });
+    expect({ status: twice.statusCode, code: twice.json().error.code }).toEqual({ status: 400, code: "INVALID_INPUT" });
+    const confirmed = await app.inject({ method: "POST", url: `${base}/${saved}/confirm`, headers: coordinatorHeaders, payload: { lines: [{ sku: "CP-WHT", quantity: 2 }] } });
+    expect(confirmed.json().data).toMatchObject({ ref: "DRAFT-1" });
+    expect((await app.inject({ method: "GET", url: base, headers: coordinatorHeaders })).json().data.drafts).toEqual([]);
+    expect((await app.inject({ method: "POST", url: `${base}/${saved}/discard`, headers: coordinatorHeaders })).statusCode).toBe(404);
   });
 });
 
