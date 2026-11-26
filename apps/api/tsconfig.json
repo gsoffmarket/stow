@@ -6,5 +6,5 @@
     "types": ["node"]
   },
   "include": ["src"],
-  "references": [{ "path": "../../packages/order-engine" }]
+  "references": [{ "path": "../../packages/order-engine" }, { "path": "../../packages/telegram" }]
 }
