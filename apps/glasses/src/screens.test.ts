@@ -92,7 +92,7 @@ describe("after closing an order", () => {
       body: "SAVED\n5 units confirmed\nTELEGRAM: PENDING",
       primary: { type: "DISMISS" },
     });
-    expect(screenFor(next, "online", "ST-1042").primary).toEqual({ type: "CLAIM" });
+    expect(screenFor(next, "online", { dismissedRef: "ST-1042", isAutoNext: false }).primary).toEqual({ type: "CLAIM" });
   });
 
   test("an unconfirmed delivery is not called sent", () => {
@@ -224,6 +224,7 @@ describe("batches", () => {
       { label: "BATCH OF 2", action: { type: "REVIEW_BATCH", size: 2 } },
       { label: "BATCH OF 3", action: { type: "REVIEW_BATCH", size: 3 } },
       { label: "BATCH OF 4", action: { type: "REVIEW_BATCH", size: 4 } },
+      { label: "AUTO-NEXT: OFF", action: { type: "TOGGLE_AUTO_NEXT" } },
     ]);
   });
 
@@ -237,8 +238,8 @@ describe("batches", () => {
     });
   });
 
-  test("an offer alone has nothing to swipe for", () => {
-    expect(screenFor(snapshot({ kind: "OFFER" }), "online")).toMatchObject({ footer: "TAP TO START", options: [] });
+  test("an offer alone offers only settings on a swipe", () => {
+    expect(screenFor(snapshot({ kind: "OFFER" }), "online")).toMatchObject({ footer: "TAP TO START · SWIPE FOR SETTINGS", options: [{ label: "AUTO-NEXT: OFF", action: { type: "TOGGLE_AUTO_NEXT" } }] });
   });
 
   test("a pick in a batch names the tote it goes into", () => {
@@ -269,5 +270,34 @@ describe("release", () => {
       primary: { type: "RELEASE" },
       options: [{ label: "KEEP ORDER", action: { type: "CANCEL_RELEASE" } }],
     });
+  });
+});
+
+describe("auto-next", () => {
+  const closed = { ref: "ST-1041", terminal: "COMPLETED" as const, units: 6, delivery: "SENT" as const };
+  const on = { dismissedRef: null, isAutoNext: true };
+
+  test("is off by default: the Saved screen comes first and the offer needs another tap", () => {
+    expect(screenFor(snapshot({ kind: "OFFER" }, { lastCompleted: closed }), "online").primary).toEqual({ type: "DISMISS" });
+  });
+
+  test("when on, confirms the closed order and offers the next on one screen, started by a tap", () => {
+    expect(screenFor(snapshot({ kind: "OFFER" }, { lastCompleted: closed }), "online", on)).toMatchObject({
+      header: "ST-1041   COMPLETED",
+      body: "SAVED · 6 units confirmed\nTELEGRAM: SENT\n\nNEXT  ST-1042\n3 LINES · 6 UNITS",
+      footer: "TAP TO START NEXT",
+      primary: { type: "CLAIM" },
+    });
+  });
+
+  test("when on with nothing queued, the Saved screen stays as it was", () => {
+    expect(screenFor(snapshot({ kind: "QUEUE_EMPTY" }, { order: null, lastCompleted: closed }), "online", on).primary).toEqual({ type: "DISMISS" });
+  });
+
+  test("is switched from the offer and ready screens", () => {
+    const toggle = { label: "AUTO-NEXT: ON", action: { type: "TOGGLE_AUTO_NEXT" } };
+    expect(screenFor(snapshot({ kind: "OFFER" }), "online", on).options).toEqual([toggle]);
+    expect(screenFor(snapshot({ kind: "QUEUE_EMPTY" }, { order: null }), "online", on).options).toEqual([toggle]);
+    expect(screenFor(snapshot({ kind: "OFFER" }), "online").options).toEqual([{ ...toggle, label: "AUTO-NEXT: OFF" }]);
   });
 });

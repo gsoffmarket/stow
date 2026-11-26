@@ -80,7 +80,7 @@ export type ReportType = "SHORTAGE" | "DAMAGED" | "LOCATION_MISMATCH" | "RETURN_
 
 /** Action is what a tap does on the current screen. */
 export type Action =
-  | { readonly type: "CLAIM" | "COMPLETE" | "REFRESH" | "ACK_REVISION" | "PAUSE" | "RESUME" | "CLOSE_CANCELLED" | "PREPARE_RELEASE" | "CANCEL_RELEASE" | "RELEASE" | "DISMISS" | "BACK" | "REPLIES" | "CHOOSE_QUANTITY" }
+  | { readonly type: "CLAIM" | "COMPLETE" | "REFRESH" | "ACK_REVISION" | "PAUSE" | "RESUME" | "CLOSE_CANCELLED" | "PREPARE_RELEASE" | "CANCEL_RELEASE" | "RELEASE" | "TOGGLE_AUTO_NEXT" | "DISMISS" | "BACK" | "REPLIES" | "CHOOSE_QUANTITY" }
   | { readonly type: "MARK_READ"; readonly noteId: string }
   | { readonly type: "REPLY"; readonly replyId: string; readonly noteId: string | null }
   | { readonly type: "CONFIRM"; readonly quantity: number }
@@ -155,11 +155,27 @@ export function moreScreen(choices: readonly Option[], ref: string, cursor: numb
 }
 
 /**
- * screenFor picks the one screen to show. Connection problems outrank work,
- * and a just-closed order is confirmed before the next one is offered.
- * dismissedRef is the closed order the worker has already tapped past.
+ * Local is what the glasses keep for themselves: the closed order whose Saved
+ * screen the worker already tapped past, and whether they turned on
+ * auto-next (PRD §7.7, off by default).
  */
-export function screenFor(snapshot: Snapshot | null, link: Link, dismissedRef: string | null = null): Screen {
+export type Local = { readonly dismissedRef: string | null; readonly isAutoNext: boolean };
+
+const noLocal: Local = { dismissedRef: null, isAutoNext: false };
+
+function sizeOf(snapshot: Snapshot): string {
+  const lines = snapshot.order?.lines ?? [];
+  const units = lines.reduce((sum, line) => sum + line.requested, 0);
+  return `${lines.length} ${lines.length === 1 ? "LINE" : "LINES"} · ${units} ${units === 1 ? "UNIT" : "UNITS"}`;
+}
+
+/**
+ * screenFor picks the one screen to show. Connection problems outrank work,
+ * and a just-closed order is confirmed before the next one is offered. With
+ * auto-next on, the confirmation and the next offer share one screen, but
+ * starting the next order is still the picker's tap.
+ */
+export function screenFor(snapshot: Snapshot | null, link: Link, local: Local = noLocal): Screen {
   const ref = snapshot?.order?.ref ?? "STOW";
   if (link === "offline") return screen(`${ref}   OFFLINE`, "NOT CONNECTED\nStop picking until synced.", "TAP TO RETRY", refresh);
   if (link === "saving") return screen(`${ref}   SAVING`, "SAVING…\nKeep the item in the tote.", "", null);
@@ -175,9 +191,12 @@ export function screenFor(snapshot: Snapshot | null, link: Link, dismissedRef: s
     return screen(`${ref}   NOTE · ${note.author.toUpperCase()}`, note.body, "TAP: GOT IT · SWIPE: REPLY", { type: "MARK_READ", noteId: note.id }, replyOptions(snapshot, note.id));
   }
   const done = snapshot.lastCompleted;
-  if (done && done.ref !== dismissedRef && (plan.kind === "QUEUE_EMPTY" || plan.kind === "OFFER")) {
+  if (done && done.ref !== local.dismissedRef && (plan.kind === "QUEUE_EMPTY" || plan.kind === "OFFER")) {
     const telegram = { SENT: "SENT", PENDING: "PENDING", UNCERTAIN: "NOT CONFIRMED", FAILED: "NOT SENT", NOT_REQUIRED: "NOT USED" }[done.delivery];
     const what = done.terminal === "COMPLETED" ? `${done.units} units confirmed` : "Cancelled, tote empty";
+    if (local.isAutoNext && plan.kind === "OFFER") {
+      return screen(`${done.ref}   ${done.terminal}`, `SAVED · ${what}\nTELEGRAM: ${telegram}\n\nNEXT  ${ref}\n${sizeOf(snapshot)}`, "TAP TO START NEXT", { type: "CLAIM" });
+    }
     return screen(`${done.ref}   ${done.terminal}`, `SAVED\n${what}\nTELEGRAM: ${telegram}`, "TAP FOR NEXT", { type: "DISMISS" });
   }
 
@@ -231,12 +250,9 @@ export function screenFor(snapshot: Snapshot | null, link: Link, dismissedRef: s
     case "PAUSED":
       return screen(`${ref}   PAUSED`, "PAUSED\nYour tote stays assigned to you.", "TAP TO RESUME", { type: "RESUME" });
     case "OFFER": {
-      const lines = snapshot.order?.lines ?? [];
-      const units = lines.reduce((sum, line) => sum + line.requested, 0);
-      const size = `${lines.length} ${lines.length === 1 ? "LINE" : "LINES"} · ${units} ${units === 1 ? "UNIT" : "UNITS"}`;
       const batches = snapshot.batchOffer.slice(1).map((_, index) => ({ label: `BATCH OF ${index + 2}`, action: { type: "REVIEW_BATCH", size: index + 2 } as Action }));
-      const footer = batches.length > 0 ? "TAP TO START · SWIPE FOR BATCH" : "TAP TO START";
-      return screen(`${ref}   NEW ORDER`, `${ref}\n${size}\nReady to pick.`, footer, { type: "CLAIM" }, batches);
+      const footer = batches.length > 0 ? "TAP TO START · SWIPE FOR BATCH" : "TAP TO START · SWIPE FOR SETTINGS";
+      return screen(`${ref}   NEW ORDER`, `${ref}\n${sizeOf(snapshot)}\nReady to pick.`, footer, { type: "CLAIM" }, [...batches, autoNextOption(local)]);
     }
     case "REVIEW_COMPLETE": {
       const tote = snapshot.totes.length > 1 && snapshot.order?.toteId ? `TOTE ${snapshot.order.toteId}` : "THE TOTE";
@@ -247,12 +263,16 @@ export function screenFor(snapshot: Snapshot | null, link: Link, dismissedRef: s
     case "TERMINAL":
       return screen(`${ref}   ${plan.terminal}`, plan.terminal === "COMPLETED" ? "SAVED\nOrder complete." : "Order cancelled.", "TAP FOR NEXT", refresh);
     case "QUEUE_EMPTY":
-      return screen("STOW   READY", "NO ORDERS YET\nNew orders from the group\nappear here.", "TAP TO REFRESH", refresh);
+      return screen("STOW   READY", "NO ORDERS YET\nNew orders from the group\nappear here.", "TAP TO REFRESH · SWIPE FOR SETTINGS", refresh, [autoNextOption(local)]);
     case "CONFLICT":
       return screen(`${ref}   STOP`, "THIS ORDER IS ASSIGNED\nTO SOMEONE ELSE", "TAP TO REFRESH", refresh);
     case "REVIEW_RELEASE":
       return screen(`${ref}   RELEASE`, "TOTE EMPTY\nHand the order back to the queue.", "TAP TO RELEASE · SWIPE TO KEEP", { type: "RELEASE" }, [keepOrder]);
   }
+}
+
+function autoNextOption(local: Local): Option {
+  return { label: `AUTO-NEXT: ${local.isAutoNext ? "ON" : "OFF"}`, action: { type: "TOGGLE_AUTO_NEXT" } };
 }
 
 const toteLabels = ["A", "B", "C", "D", "E"] as const;
