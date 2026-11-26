@@ -1,14 +1,16 @@
 // The public page shown when Stow is opened in a browser rather than inside
 // Telegram: what Stow is, the loop it runs, real captures, what the Mini App
-// covers, and how a team gets started. It is loaded lazily, so the Mini App inside Telegram never
-// downloads it.
+// covers, and how a team gets started. It is loaded lazily, so the Mini App
+// inside Telegram never downloads it.
 //
 // PRD §14.5 sets the motion: slow coral and deep-blue geometry behind the
-// hero, a word-by-word headline, and a scroll-linked strip walking the
-// Telegram → glasses → Telegram loop. The strip is drawn in the browser, so it
-// is labelled as a simulated preview; the captures below it are real.
+// hero and a word-by-word headline. The Telegram → glasses → Telegram strip
+// was first pinned and lit by scroll position; that left a dark screen on
+// entry and a half-lit last step, so it is now a plain strip that fades in.
+// The strip is drawn in the browser and labelled as a simulated preview; every
+// other image is a real capture.
 
-import { m, useInView, useReducedMotion, useScroll, useTransform, type MotionValue } from "motion/react";
+import { m, useInView, useReducedMotion } from "motion/react";
 import { useRef, type ReactNode } from "react";
 import { copy } from "./copy.ts";
 import { Mark } from "./ui.tsx";
@@ -61,7 +63,7 @@ function Hero() {
         <m.div animate={drift(40, -30, 26)} className="absolute -bottom-40 left-[-10%] size-[560px] rounded-full bg-[#143ca3] opacity-40 blur-[140px]" />
         <div className="absolute inset-x-0 bottom-0 h-40 bg-gradient-to-b from-transparent to-canvas" />
       </div>
-      <div className="relative mx-auto grid max-w-[1120px] items-center gap-12 px-4 pt-16 pb-24 sm:px-8 sm:pt-24 sm:pb-32 lg:grid-cols-[1.1fr_1fr]">
+      <div className="relative mx-auto grid max-w-[1120px] items-center gap-12 px-4 pt-16 pb-24 sm:px-8 sm:pt-24 sm:pb-24 lg:grid-cols-[1fr_1.1fr]">
         <div className="flex flex-col gap-6">
           <span className="text-[12px] font-semibold uppercase tracking-[0.073em] text-accent">{text.tagline}</span>
           <h1 className="max-w-[760px] text-[40px] leading-[1.12] font-normal tracking-[0.004em] sm:text-[56px] sm:leading-[1.17]">
@@ -103,83 +105,93 @@ function HeroCaptures() {
       initial={{ opacity: 0, y: 24 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ delay: 0.3, duration: 0.8, ease: [0.2, 0, 0, 1] }}
-      className="flex flex-col gap-3"
+      className="flex flex-col gap-4"
     >
-      <div className="relative pr-16 pb-20 sm:pr-24 sm:pb-24">
-        <div className="rounded-[28px] border border-border-strong bg-black p-3 shadow-[0_40px_120px_-30px_rgba(255,99,99,0.45)]">
-          <img src="landing/glasses-pick.png" width={576} height={288} alt={text.heroGlassesAlt} className="w-full rounded-[18px]" />
+      <div className="relative pr-20 pb-16 sm:pr-32 sm:pb-20">
+        <Lens src="landing/glasses-pick.png" alt={text.heroGlassesAlt} isEager />
+        {/* Only the top of the Mini App capture has content, so the frame shows that part and fades out. */}
+        <div className="absolute right-0 bottom-0 aspect-[9/14] w-[120px] overflow-hidden rounded-[22px] border border-border-strong bg-canvas shadow-[0_30px_60px_-20px_rgba(0,0,0,0.8)] sm:w-[170px] sm:rounded-[26px]">
+          <img src="landing/miniapp-orders.jpg" width={450} height={974} alt={text.heroMiniAppAlt} className="w-full" />
+          <div aria-hidden="true" className="absolute inset-x-0 bottom-0 h-1/3 bg-gradient-to-b from-transparent to-canvas" />
         </div>
-        <img
-          src="landing/miniapp-orders.jpg"
-          width={450}
-          height={974}
-          alt={text.heroMiniAppAlt}
-          className="absolute right-0 bottom-0 w-[110px] rounded-[18px] border border-border-strong shadow-[var(--shadow-lift)] sm:w-[150px] sm:rounded-[22px]"
-        />
       </div>
       <figcaption className="text-[12px] text-text-muted">{text.heroCapture}</figcaption>
     </m.figure>
   );
 }
 
-// From tablet width up, a tall section pins the strip while the page scrolls,
-// so scrolling walks the three steps in order. On a phone the stacked steps
-// are taller than the screen, so they scroll normally and light up as they pass.
-function Loop() {
-  const ref = useRef<HTMLElement>(null);
-  const isStill = useReducedMotion() ?? false;
-  const { scrollYProgress } = useScroll({ target: ref, offset: ["start start", "end end"] });
+// The G2 draws green on black. A capture framed as a lens, padded so its text
+// never meets the edge and lit with a faint green glow, reads as a display
+// rather than a black box.
+function Lens({ src, alt, isEager = false }: { src: string; alt: string; isEager?: boolean }) {
   return (
-    <section ref={ref} className={isStill ? "" : "md:h-[200vh]"}>
-      <div className={`${isStill ? "" : "md:sticky md:top-0 md:min-h-dvh"} mx-auto flex max-w-[1120px] flex-col justify-center gap-8 px-4 py-16 sm:px-8`}>
-        <div className="flex flex-col gap-2">
-          <h2 className="text-[32px] leading-tight font-normal sm:text-[40px]">{text.loopTitle}</h2>
-          <p className="text-[16px] text-text-secondary">{text.loopLede}</p>
-        </div>
-        <div className="grid gap-4 md:grid-cols-3">
-          {text.loop.map((step, index) => (
-            <LoopStep key={step.label} step={step} index={index} progress={scrollYProgress} isStill={isStill} />
-          ))}
-        </div>
-        <span className="self-start rounded-[var(--radius-badge)] border border-border-strong px-2 py-1 font-mono text-[11px] tracking-[0.04em] text-text-muted">{text.simulated}</span>
+    <div className="rounded-[26px] bg-gradient-to-b from-white/20 to-white/[0.04] p-px shadow-[0_30px_90px_-35px_rgba(69,240,122,0.45)]">
+      <div className="relative overflow-hidden rounded-[25px] bg-black px-5 py-4 sm:px-7 sm:py-6">
+        <div aria-hidden="true" className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_at_top,rgba(69,240,122,0.12),transparent_65%)]" />
+        <img src={src} width={576} height={288} loading={isEager ? "eager" : "lazy"} alt={alt} className="relative w-full" />
       </div>
+    </div>
+  );
+}
+
+function Loop() {
+  return (
+    <section className="mx-auto flex max-w-[1120px] flex-col gap-10 px-4 py-20 sm:px-8 sm:py-24">
+      <div className="flex flex-col gap-3">
+        <h2 className="text-[32px] leading-tight font-normal sm:text-[40px]">{text.loopTitle}</h2>
+        <p className="text-[16px] text-text-secondary">{text.loopLede}</p>
+      </div>
+      <ol className="grid items-stretch gap-4 lg:grid-cols-[1fr_auto_1fr_auto_1fr]">
+        {text.loop.map((step, index) => (
+          <LoopStep key={step.label} step={step} index={index} />
+        ))}
+      </ol>
+      <span className="self-start rounded-[var(--radius-badge)] border border-border-strong px-2 py-1 font-mono text-[11px] tracking-[0.04em] text-text-muted">{text.simulated}</span>
     </section>
   );
 }
 
-function LoopStep({ step, index, progress, isStill }: { step: (typeof text.loop)[number]; index: number; progress: MotionValue<number>; isStill: boolean }) {
-  // Each step lights up in its third of the scroll and stays lit after.
-  const start = index / 3;
-  const opacity = useTransform(progress, [start, start + 0.15], [0.25, 1]);
-  const y = useTransform(progress, [start, start + 0.15], [24, 0]);
+function LoopStep({ step, index }: { step: (typeof text.loop)[number]; index: number }) {
   const isGlasses = index === 1;
   return (
-    <m.div style={isStill ? {} : { opacity, y }} className="flex flex-col gap-3">
-      <span className="text-[11px] font-semibold uppercase tracking-[0.073em] text-text-secondary">
-        {index + 1} · {step.label}
-      </span>
-      <span className="text-[19px] font-medium">{step.title}</span>
-      {isGlasses ? (
-        <pre className="aspect-[2/1] overflow-hidden rounded-[var(--radius-card)] border border-border bg-black p-5 font-mono text-[15px] leading-[1.5] text-[#45f07a]">{step.body}</pre>
-      ) : (
-        <pre className="rounded-[18px] rounded-bl-[6px] bg-[#1f2937] px-5 py-4 font-sans text-[15px] leading-[1.5] whitespace-pre-wrap text-[#e6edf5]">{step.body}</pre>
+    <>
+      {index > 0 && (
+        <li aria-hidden="true" className="hidden items-center text-[20px] text-text-muted lg:flex">→</li>
       )}
-    </m.div>
+      <m.li
+        initial={{ opacity: 0, y: 16 }}
+        whileInView={{ opacity: 1, y: 0 }}
+        viewport={{ once: true, margin: "-80px" }}
+        transition={{ delay: index * 0.12, duration: 0.6, ease: [0.2, 0, 0, 1] }}
+        className="flex flex-col gap-4 rounded-[var(--radius-card)] border border-border bg-surface/50 p-5 sm:p-6"
+      >
+        <span className="text-[11px] font-semibold uppercase tracking-[0.073em] text-accent">
+          {index + 1} · {step.label}
+        </span>
+        <span className="text-[19px] font-medium">{step.title}</span>
+        {isGlasses ? (
+          <pre className="mt-auto rounded-[18px] border border-white/10 bg-black px-5 py-4 font-mono text-[14px] leading-[1.55] text-[#45f07a] shadow-[0_20px_60px_-30px_rgba(69,240,122,0.5)]">{step.body}</pre>
+        ) : (
+          <pre className="mt-auto self-start rounded-[18px] rounded-bl-[6px] bg-[#1f2937] px-5 py-4 font-sans text-[14px] leading-[1.55] whitespace-pre-wrap text-[#e6edf5]">{step.body}</pre>
+        )}
+      </m.li>
+    </>
   );
 }
 
 function Captures() {
   return (
-    <section className="mx-auto flex max-w-[1120px] flex-col gap-20 px-4 py-20 sm:px-8 sm:py-28">
+    <section className="mx-auto flex max-w-[1120px] flex-col gap-24 px-4 py-20 sm:px-8 sm:py-28">
       {text.sections.map((section, index) => (
-        <Reveal key={section.title} className={`grid items-center gap-8 md:grid-cols-2 ${index % 2 === 1 ? "md:[&>*:first-child]:order-2" : ""}`}>
-          <div className="flex flex-col gap-3">
-            <h2 className="text-[28px] leading-tight font-normal sm:text-[32px]">{section.title}</h2>
-            <p className="text-[16px] leading-[1.6] text-text-secondary">{section.body}</p>
+        <Reveal key={section.title} className={`grid items-center gap-10 md:grid-cols-2 md:gap-16 ${index % 2 === 1 ? "md:[&>*:first-child]:order-2" : ""}`}>
+          <div className="flex max-w-[460px] flex-col gap-4">
+            <span className="font-mono text-[12px] tracking-[0.04em] text-accent">{text.onGlasses(index + 1, text.sections.length)}</span>
+            <h2 className="text-[28px] leading-tight font-normal sm:text-[34px]">{section.title}</h2>
+            <p className="text-[16px] leading-[1.7] text-text-secondary">{section.body}</p>
           </div>
-          <figure className="flex flex-col gap-3">
+          <figure className="flex w-full max-w-[520px] flex-col gap-4 md:justify-self-center">
             {section.images.map((image) => (
-              <img key={image} src={`landing/${image}`} width={576} height={288} loading="lazy" alt="" className="w-full rounded-[var(--radius-card)] border border-border" />
+              <Lens key={image} src={`landing/${image}`} alt="" />
             ))}
             <figcaption className="text-[12px] text-text-muted">{text.capture}</figcaption>
           </figure>

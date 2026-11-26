@@ -22,6 +22,7 @@ export const copy = {
       { label: "Back in the group", title: "The status message updates itself", body: "ST-1017 · PICKING · rev 1\nTote A · Picker 02\nTS-BLK-M: 3/3\nCP-WHT: 0/2\nProgress: 3/5 confirmed." },
     ],
     capture: "Even Hub simulator 0.9.5 capture",
+    onGlasses: (n: number, total: number) => `ON THE GLASSES · ${String(n).padStart(2, "0")} / ${String(total).padStart(2, "0")}`,
     miniAppCapture: "Stow Mini App in Telegram",
     sections: [
       { title: "One instruction at a time", body: "Bin, item, SKU and how many. A tap confirms what actually went in the tote; a swipe picks fewer, reports a shortage or messages the group.", images: ["glasses-pick.png"] },
