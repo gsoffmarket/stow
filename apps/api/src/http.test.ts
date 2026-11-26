@@ -32,6 +32,7 @@ async function workspaceWithDevice() {
     createdBy: coordinator,
     sourceKey: `test:${randomUUID()}`,
     connectionId: null,
+    sourceMessageId: null,
     request: { ref: null, lines: [{ sku: "TS-BLK-M", quantity: 3 }] },
   });
   if (!created.ok || !("orderId" in created)) throw new Error("order not created");

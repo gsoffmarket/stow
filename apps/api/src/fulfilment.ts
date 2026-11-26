@@ -151,6 +151,7 @@ export type NewOrder = {
   readonly createdBy: string;
   readonly sourceKey: string;
   readonly connectionId: string | null;
+  readonly sourceMessageId: string | null;
   readonly request: OrderRequest;
 };
 
@@ -192,8 +193,9 @@ export async function createOrder(pool: pg.Pool, input: NewOrder): Promise<Creat
       return { ok: false, code: "REF_TAKEN" };
     }
     const order = await client.query<{ id: string }>(
-      "insert into orders (workspace_id, ref, source_key, connection_id, created_by) values ($1, $2, $3, $4, $5) returning id",
-      [input.workspaceId, ref, input.sourceKey, input.connectionId, input.createdBy],
+      `insert into orders (workspace_id, ref, source_key, connection_id, source_message_id, created_by)
+       values ($1, $2, $3, $4, $5, $6) returning id`,
+      [input.workspaceId, ref, input.sourceKey, input.connectionId, input.sourceMessageId, input.createdBy],
     );
     const orderId = order.rows[0]!.id;
     for (const [index, line] of input.request.lines.entries()) {
