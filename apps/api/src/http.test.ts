@@ -9,7 +9,7 @@ let db: TestDatabase;
 let app: FastifyInstance;
 beforeAll(async () => {
   db = await createTestDatabase();
-  app = buildHttp({ pool: db.pool, taskTokenSecret: "x".repeat(32), corsAllowedOrigins: ["http://glasses.test"], logger: false });
+  app = buildHttp({ pool: db.pool, taskTokenSecret: "x".repeat(32), botToken: null, now: () => new Date(), corsAllowedOrigins: ["http://glasses.test"], logger: false });
 });
 afterAll(async () => {
   await app.close();
