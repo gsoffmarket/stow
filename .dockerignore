@@ -1,0 +1,10 @@
+node_modules
+**/node_modules
+**/dist
+.git
+.claude
+.env
+.env.*
+**/.env.local
+deploy/.env
+ENGINEERING_*.md

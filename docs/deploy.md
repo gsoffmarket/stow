@@ -1,0 +1,59 @@
+# Deploying Stow
+
+Stow runs on one small Linux server: Postgres, the API (which also runs the Telegram loops) and Caddy for HTTPS, from `deploy/compose.yaml`. Caddy serves the Telegram Mini App at `/` and the glasses app at `/glasses/`.
+
+## What you need
+
+- A server with Docker and the Compose plugin, ports 80 and 443 open. Ubuntu 24.04 with 2 GB of RAM is plenty.
+- A hostname pointing at the server's IP: your own subdomain, or `<ip-with-dashes>.sslip.io` if you have no domain.
+- A Telegram bot from [@BotFather](https://t.me/BotFather).
+
+## First deploy
+
+```bash
+git clone https://github.com/gsoffmarket/stow.git
+cd stow
+cp deploy/.env.example deploy/.env
+```
+
+Fill in `deploy/.env`: the hostname, a database password, a task-token secret and the bot's token and username. Then:
+
+```bash
+docker compose -f deploy/compose.yaml --env-file deploy/.env up -d --build
+```
+
+The API applies migrations on start. Check it is up:
+
+```bash
+curl https://YOUR_HOST/health/ready
+```
+
+## Connect Telegram
+
+1. In @BotFather, use `/newapp` (or Bot Settings → Configure Mini App) and set the Mini App URL to `https://YOUR_HOST/`.
+2. Open a private chat with your bot and send `/setup Your stockroom name`.
+3. Add the bot to your work group and send `/stow_connect` there.
+4. Send `/invite picker` to the bot and forward the link to each picker.
+
+The API polls Telegram for updates, so run only one deployment per bot.
+
+## Glasses
+
+Point the Even Hub simulator, or the Even Realities app's developer mode, at `https://YOUR_HOST/glasses/`. For a packaged `.ehpk`, build the glasses app with `VITE_STOW_API_URL=https://YOUR_HOST` and add that origin to the `network` whitelist in `apps/glasses/app.json`.
+
+## Updating
+
+```bash
+git pull
+docker compose -f deploy/compose.yaml --env-file deploy/.env up -d --build
+```
+
+Migrations only move forward and run on start.
+
+## Backups
+
+The `backup` service writes a `pg_dump` every 24 hours to the `backups` volume and keeps a week. Those dumps live on the same server, so copy them somewhere else if the data matters. To restore into a fresh database:
+
+```bash
+docker compose -f deploy/compose.yaml --env-file deploy/.env exec -T postgres pg_restore -U stow -d stow --clean < stow-YYYY-MM-DD.dump
+```

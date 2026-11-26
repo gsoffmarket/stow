@@ -1,0 +1,32 @@
+# Caddy obtains and renews the HTTPS certificate for STOW_HOST on its own.
+{$STOW_HOST} {
+	encode zstd gzip
+
+	handle /v1/* {
+		reverse_proxy api:8787
+	}
+	handle /health/* {
+		reverse_proxy api:8787
+	}
+
+	# The Even Hub glasses app, loaded by the Even Realities app on the phone.
+	handle_path /glasses/* {
+		root * /srv/glasses
+		try_files {path} /index.html
+		file_server
+	}
+
+	# The Telegram Mini App.
+	handle {
+		root * /srv/companion
+		try_files {path} /index.html
+		file_server
+	}
+
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		-Server
+	}
+}

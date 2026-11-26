@@ -1,0 +1,64 @@
+# Production stack for one VPS: Postgres, the API, and Caddy in front with
+# automatic HTTPS. From the repository root:
+#   docker compose -f deploy/compose.yaml --env-file deploy/.env up -d --build
+services:
+  postgres:
+    image: postgres:18.7
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: stow
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in deploy/.env}
+      POSTGRES_DB: stow
+    volumes:
+      - pgdata:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "stow"]
+      interval: 5s
+      retries: 20
+
+  api:
+    build: { context: .., dockerfile: deploy/Dockerfile, target: api }
+    restart: unless-stopped
+    depends_on:
+      postgres: { condition: service_healthy }
+    environment:
+      APP_ENV: production
+      PORT: "8787"
+      DATABASE_URL: postgres://stow:${POSTGRES_PASSWORD}@postgres:5432/stow
+      TASK_TOKEN_SECRET: ${TASK_TOKEN_SECRET:?set TASK_TOKEN_SECRET in deploy/.env}
+      CORS_ALLOWED_ORIGINS: https://${STOW_HOST}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
+      TELEGRAM_BOT_USERNAME: ${TELEGRAM_BOT_USERNAME}
+
+  edge:
+    build: { context: .., dockerfile: deploy/Dockerfile, target: edge }
+    restart: unless-stopped
+    depends_on: [api]
+    environment:
+      STOW_HOST: ${STOW_HOST:?set STOW_HOST in deploy/.env}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - caddy-data:/data
+
+  # A nightly dump, keeping a week. Dumps stay on this server's disk; copy
+  # them elsewhere for real disaster recovery.
+  backup:
+    image: postgres:18.7
+    restart: unless-stopped
+    depends_on:
+      postgres: { condition: service_healthy }
+    environment:
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - backups:/backups
+    entrypoint:
+      - sh
+      - -c
+      - while true; do pg_dump -h postgres -U stow -Fc stow > "/backups/stow-$$(date +%F).dump"; find /backups -name 'stow-*.dump' -mtime +7 -delete; sleep 86400; done
+
+volumes:
+  pgdata:
+  caddy-data:
+  backups:
