@@ -1,7 +1,7 @@
 import { describe, expect, test } from "vitest";
 import { clampQuantity, moreScreen, pairingScreen, quantityScreen, screenFor, type Snapshot } from "./screens.ts";
 
-const order = { id: "o1", ref: "ST-1042", revision: 2, version: "7", isCancelRequested: false, toteId: "A" };
+const order = { id: "o1", ref: "ST-1042", revision: 2, version: "7", isCancelRequested: false, toteId: "A", lines: [{ requested: 3 }, { requested: 2 }, { requested: 1 }] };
 const quickReplies = [{ id: "ON_IT", text: "On it" }, { id: "FOUND", text: "Found them" }];
 const empty = { changes: [], decision: null, lastCompleted: null, note: null, quickReplies };
 
@@ -193,5 +193,15 @@ describe("fewer than asked", () => {
   test("a single unit has nothing fewer to choose", () => {
     const one = snapshot({ ...(task("PICK") as Extract<Snapshot["plan"], { kind: "TASK" }>), task: { ...(task("PICK") as Extract<Snapshot["plan"], { kind: "TASK" }>).task, quantity: 1 } });
     expect(screenFor(one, "online").options.map((option) => option.label)).not.toContain("PICK FEWER");
+  });
+});
+
+describe("next order", () => {
+  test("an offer says how big the order is and starts it on tap", () => {
+    expect(screenFor(snapshot({ kind: "OFFER" }), "online")).toMatchObject({
+      header: "ST-1042   NEW ORDER",
+      body: "ST-1042\n3 LINES · 6 UNITS\nReady to pick.",
+      primary: { type: "CLAIM" },
+    });
   });
 });
