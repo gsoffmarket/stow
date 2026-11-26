@@ -67,10 +67,10 @@ describe("plan gates", () => {
       overrides: { assignment: { workerId: worker, toteId: "A", isAccepted: true, ackRevision: 1 } },
       want: { kind: "REVISION_ACK", fromRevision: 1, toRevision: 2 },
     },
-    { name: "open exception", overrides: { exception: { id: "x", status: "OPEN" as const } }, want: { kind: "BLOCKED", exceptionId: "x" } },
+    { name: "open exception", overrides: { exception: { id: "x", status: "OPEN" as const, type: "SHORTAGE" as const, lineId: "a", reportedQty: null } }, want: { kind: "BLOCKED", exceptionId: "x" } },
     {
       name: "resolved exception awaiting ack",
-      overrides: { exception: { id: "x", status: "RESOLVED_AWAITING_ACK" as const } },
+      overrides: { exception: { id: "x", status: "RESOLVED_AWAITING_ACK" as const, type: "SHORTAGE" as const, lineId: "a", reportedQty: null } },
       want: { kind: "RESOLUTION_ACK", exceptionId: "x" },
     },
   ])("$name blocks picking", ({ overrides, want }) => {

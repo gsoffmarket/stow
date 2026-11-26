@@ -28,6 +28,17 @@ export type Assignment = {
 
 export type ExceptionStatus = "OPEN" | "RESOLVED_AWAITING_ACK";
 
+export type ExceptionType = "SHORTAGE" | "DAMAGED" | "LOCATION_MISMATCH" | "RETURN_BLOCKED" | "OTHER";
+
+/** OrderException is the one unresolved problem an order may have. */
+export type OrderException = {
+  readonly id: string;
+  readonly status: ExceptionStatus;
+  readonly type: ExceptionType;
+  readonly lineId: string | null;
+  readonly reportedQty: number | null;
+};
+
 export type Order = {
   readonly id: string;
   readonly ref: string;
@@ -37,7 +48,7 @@ export type Order = {
   readonly isPaused: boolean;
   readonly isCancelRequested: boolean;
   readonly isReleaseRequested: boolean;
-  readonly exception: { readonly id: string; readonly status: ExceptionStatus } | null;
+  readonly exception: OrderException | null;
   readonly assignment: Assignment | null;
   readonly lines: readonly Line[];
 };
@@ -78,8 +89,8 @@ export function outstandingReturn(line: Line): number {
 
 /**
  * plan derives the single next thing the picker must do. The order of checks
- * is the PRD's screen priority: ownership, pause, unacknowledged revision,
- * exceptions, returns, picks, then review. Derivation never mutates.
+ * is the PRD's screen priority: ownership, pause, a resolution or revision to
+ * acknowledge, an open exception, returns, picks, then review. Derivation never mutates.
  */
 export function plan(order: Order, workerId: string): Plan {
   if (order.terminal) return { kind: "TERMINAL", terminal: order.terminal };
@@ -87,11 +98,13 @@ export function plan(order: Order, workerId: string): Plan {
   if (!assignment || !assignment.isAccepted) return { kind: "OFFER" };
   if (assignment.workerId !== workerId) return { kind: "CONFLICT" };
   if (order.isPaused) return { kind: "PAUSED" };
-  if (assignment.ackRevision !== order.revision) {
-    return { kind: "REVISION_ACK", fromRevision: assignment.ackRevision, toRevision: order.revision };
-  }
+  // A resolution is acknowledged as a whole, including any revision it made,
+  // so it is shown before a plain revision notice.
   if (order.exception?.status === "RESOLVED_AWAITING_ACK") {
     return { kind: "RESOLUTION_ACK", exceptionId: order.exception.id };
+  }
+  if (assignment.ackRevision !== order.revision) {
+    return { kind: "REVISION_ACK", fromRevision: assignment.ackRevision, toRevision: order.revision };
   }
   if (order.exception?.status === "OPEN") return { kind: "BLOCKED", exceptionId: order.exception.id };
 
@@ -305,4 +318,89 @@ export function closeCancelled(order: Order, workerId: string, expected: Expecte
   if (stale) return stale;
   if (plan(order, workerId).kind !== "REVIEW_CANCEL") return { ok: false, code: "INVALID_TRANSITION" };
   return { ok: true, order: { ...order, terminal: "CANCELLED", version: order.version + 1 } };
+}
+
+/** Report is a picker saying the current task cannot be done as shown. */
+export type Report = { readonly exceptionId: string; readonly type: ExceptionType; readonly reportedQty: number | null };
+
+/**
+ * report blocks the order on the current task's line. Only one exception can
+ * be open per order, and nothing else can be confirmed until a coordinator
+ * resolves it and the picker acknowledges the resolution.
+ */
+export function report(order: Order, workerId: string, problem: Report, expected: Expected): Outcome {
+  const stale = checkFresh(order, expected);
+  if (stale) return stale;
+  if (order.exception) return { ok: false, code: "OPEN_EXCEPTION" };
+  const next = plan(order, workerId);
+  if (next.kind !== "TASK") return { ok: false, code: "INVALID_TRANSITION" };
+  if (problem.reportedQty !== null && (!Number.isInteger(problem.reportedQty) || problem.reportedQty < 0 || problem.reportedQty > limits.unitsPerLine)) {
+    return { ok: false, code: "QUANTITY_OUT_OF_RANGE" };
+  }
+  const exception = { id: problem.exceptionId, status: "OPEN" as const, type: problem.type, lineId: next.task.lineId, reportedQty: problem.reportedQty };
+  return { ok: true, order: { ...order, exception, version: order.version + 1 } };
+}
+
+/**
+ * Resolution is the coordinator's decision. Software never picks one: a
+ * shortage is not silently reduced and a substitute is never proposed here.
+ */
+export type Resolution =
+  | { readonly kind: "RESUME" }
+  | { readonly kind: "REDUCE"; readonly quantity: number }
+  | { readonly kind: "SUBSTITUTE"; readonly quantity: number; readonly substitute: Omit<Line, "requested" | "picked" | "creationIndex">; readonly substituteQuantity: number }
+  | { readonly kind: "CANCEL" };
+
+/** resolve answers the open exception, revising the order when the decision changes targets. */
+export function resolve(order: Order, resolution: Resolution, expected: Expected): Outcome {
+  const stale = checkFresh(order, expected);
+  if (stale) return stale;
+  const exception = order.exception;
+  if (exception?.status !== "OPEN") return { ok: false, code: "INVALID_TRANSITION" };
+  const resolved = { ...order, exception: { ...exception, status: "RESOLVED_AWAITING_ACK" as const }, version: order.version + 1 };
+  if (resolution.kind === "RESUME") return { ok: true, order: resolved };
+  if (resolution.kind === "CANCEL") {
+    const lines = order.lines.map((line) => ({ ...line, requested: 0 }));
+    return { ok: true, order: { ...resolved, lines, isCancelRequested: true, revision: order.revision + 1 } };
+  }
+  if (!exception.lineId) return { ok: false, code: "INVALID_TRANSITION" };
+  const line = order.lines.find((candidate) => candidate.id === exception.lineId)!;
+  // A reduction lowers the target; raising it is a revision, not an answer to a problem.
+  if (resolution.quantity > line.requested) return { ok: false, code: "QUANTITY_OUT_OF_RANGE" };
+  const changes: Change[] = [{ kind: "SET_QUANTITY", lineId: line.id, quantity: resolution.quantity }];
+  if (resolution.kind === "SUBSTITUTE") changes.push({ kind: "ADD_LINE", line: resolution.substitute, quantity: resolution.substituteQuantity });
+  const next = applyChanges(order, changes);
+  if (!next.ok) return next;
+  return { ok: true, order: { ...resolved, lines: next.lines, revision: order.revision + 1 } };
+}
+
+/**
+ * acknowledgeResolution closes the exception and, in the same step, accepts
+ * any revision the resolution made: the worker was shown both together.
+ */
+export function acknowledgeResolution(order: Order, workerId: string, exceptionId: string, expected: Expected): Outcome {
+  const stale = checkFresh(order, expected);
+  if (stale) return stale;
+  const next = plan(order, workerId);
+  if (next.kind !== "RESOLUTION_ACK" || next.exceptionId !== exceptionId) return { ok: false, code: "INVALID_TRANSITION" };
+  const assignment = { ...order.assignment!, ackRevision: order.revision };
+  return { ok: true, order: { ...order, exception: null, assignment, version: order.version + 1 } };
+}
+
+/** pause and resume keep the assignment and the tote; nothing is released. */
+export function pause(order: Order, workerId: string, expected: Expected): Outcome {
+  return setPaused(order, workerId, expected, true);
+}
+
+export function resume(order: Order, workerId: string, expected: Expected): Outcome {
+  return setPaused(order, workerId, expected, false);
+}
+
+function setPaused(order: Order, workerId: string, expected: Expected, isPaused: boolean): Outcome {
+  const stale = checkFresh(order, expected);
+  if (stale) return stale;
+  const assignment = order.assignment;
+  if (!assignment?.isAccepted || assignment.workerId !== workerId) return { ok: false, code: "ASSIGNMENT_CONFLICT" };
+  if (order.isPaused === isPaused) return { ok: false, code: "NO_CHANGE" };
+  return { ok: true, order: { ...order, isPaused, version: order.version + 1 } };
 }
