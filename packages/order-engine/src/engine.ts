@@ -405,6 +405,37 @@ function setPaused(order: Order, workerId: string, expected: Expected, isPaused:
   return { ok: true, order: { ...order, isPaused, version: order.version + 1 } };
 }
 
+/**
+ * prepareRelease starts handing an order back to the queue. Everything in the
+ * tote goes back to its bin first, because v1 never passes a part-filled tote
+ * to another picker; the plan turns every picked unit into a return.
+ */
+export function prepareRelease(order: Order, workerId: string, expected: Expected): Outcome {
+  const stale = checkFresh(order, expected);
+  if (stale) return stale;
+  if (order.assignment?.workerId !== workerId) return { ok: false, code: "ASSIGNMENT_CONFLICT" };
+  if (order.exception) return { ok: false, code: "OPEN_EXCEPTION" };
+  if (order.isPaused || order.isCancelRequested || order.isReleaseRequested) return { ok: false, code: "INVALID_TRANSITION" };
+  return { ok: true, order: { ...order, isReleaseRequested: true, version: order.version + 1 } };
+}
+
+/** cancelRelease keeps the order after all; units already returned are picked again. */
+export function cancelRelease(order: Order, workerId: string, expected: Expected): Outcome {
+  const stale = checkFresh(order, expected);
+  if (stale) return stale;
+  if (order.assignment?.workerId !== workerId) return { ok: false, code: "ASSIGNMENT_CONFLICT" };
+  if (!order.isReleaseRequested) return { ok: false, code: "INVALID_TRANSITION" };
+  return { ok: true, order: { ...order, isReleaseRequested: false, version: order.version + 1 } };
+}
+
+/** release returns an order with an empty tote to the queue for anyone to claim. */
+export function release(order: Order, workerId: string, expected: Expected): Outcome {
+  const stale = checkFresh(order, expected);
+  if (stale) return stale;
+  if (plan(order, workerId).kind !== "REVIEW_RELEASE") return { ok: false, code: "INVALID_TRANSITION" };
+  return { ok: true, order: { ...order, assignment: null, isReleaseRequested: false, version: order.version + 1 } };
+}
+
 /** batchLimits bounds how many orders one picker carries at once (PRD §7.6). */
 export const batchLimits = { min: 2, max: 5 } as const;
 
