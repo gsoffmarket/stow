@@ -49,6 +49,7 @@ See [docs/architecture.md](docs/architecture.md) for the codemap, invariants and
 | **Engine** | Batch planning across totes in walking order, revisions that never overwrite picked work, mandatory returns, cancellation with full return, one open problem per order, idempotent commands, stale-command rejection |
 
 **Verified runs**, all in Even Hub simulator 0.9.5 against a real Postgres database:
+- **Real Telegram:** a group bound with `/stow_bind`, an `/order` sent in the group, picked and completed on the glasses. The bot posted the status message and Telegram accepted all five updates; the glasses ended on "TELEGRAM: SENT".
 - **Pick to complete:** start, three picks, review, complete. Six events committed.
 - **Change mid-pick:** pick 3 shirts, revise to 1, acknowledge, return 2, report a shortage from More, coordinator reduces, acknowledge, pick, complete. Twelve events in that order.
 - **Pairing:** the glasses showed a code, it was approved in the Mini App, and the glasses loaded that picker's work.
@@ -57,7 +58,7 @@ See [docs/architecture.md](docs/architecture.md) for the codemap, invariants and
 - **Console revision:** a revision from the Mini App reached the glasses as "STOP — ORDER CHANGED".
 - **Batch of two:** started from More, picked in walking order across totes A and B (A, B, A, B, A), each tote reviewed and completed. Twelve events in that order.
 
-**285 automated tests** pass, most of them integration tests against real Postgres. They include two pickers claiming one order at once, an all-or-none batch claim, a revision and a cancellation in the middle of a batch, replayed and conflicting command IDs, forged task tokens and forged Telegram launch data. A live run against real Telegram and physical G2 hardware is still to come.
+**285 automated tests** pass, most of them integration tests against real Postgres. They include two pickers claiming one order at once, an all-or-none batch claim, a revision and a cancellation in the middle of a batch, replayed and conflicting command IDs, forged task tokens and forged Telegram launch data. A run on physical G2 hardware is still to come.
 
 <p>
   <img src="docs/evidence/glasses-return.png" width="288" alt="Glasses: return 2 black T-shirts to bin A-03, tap to confirm actual return.">
