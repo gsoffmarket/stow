@@ -93,7 +93,7 @@ describe("revise then acknowledge", () => {
   test("refuses a stale coordinator preview and an order with an open exception", () => {
     const change = [{ kind: "SET_QUANTITY" as const, lineId: "a", quantity: 1 }];
     expect(revise(order([line("a", 4, 2)]), change, { revision: 1, version: 4 })).toEqual({ ok: false, code: "STALE_VERSION" });
-    const blocked = order([line("a", 4, 2)], { exception: { id: "x", status: "OPEN" } });
+    const blocked = order([line("a", 4, 2)], { exception: { id: "x", status: "OPEN", type: "SHORTAGE", lineId: "a", reportedQty: null } });
     expect(revise(blocked, change, fresh)).toEqual({ ok: false, code: "OPEN_EXCEPTION" });
   });
 });
