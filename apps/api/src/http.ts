@@ -10,6 +10,7 @@ import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest }
 import type pg from "pg";
 import { z } from "zod";
 import { limits as orderLimits, outstandingPick, outstandingReturn, type Order, type Task } from "@stow/order-engine";
+import * as drafts from "./drafts.ts";
 import { createOrderOnce, runCommand, startBatch, workerView, type Command, type Role } from "./fulfilment.ts";
 import * as devices from "./devices.ts";
 import { markRead, postNote, quickReplies, sendReply } from "./messages.ts";
@@ -83,15 +84,17 @@ const consoleCommandBody = z.discriminatedUnion("type", [
 ]);
 
 // The same limits as /order in Telegram: one line per SKU, bounded quantities.
+const orderLines = z
+  .array(z.strictObject({ sku: z.string().trim().min(1).max(64).transform((sku) => sku.normalize("NFKC").toUpperCase()), quantity: z.number().int().min(1).max(orderLimits.unitsPerLine) }))
+  .min(1)
+  .max(orderLimits.lines)
+  .refine((lines) => new Set(lines.map((line) => line.sku)).size === lines.length, "each SKU once")
+  .refine((lines) => lines.reduce((sum, line) => sum + line.quantity, 0) <= orderLimits.unitsPerOrder, "too many units");
+
 const newOrderBody = z.strictObject({
   commandId: uuid,
   ref: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,39}$/).nullable(),
-  lines: z
-    .array(z.strictObject({ sku: z.string().trim().min(1).max(64).transform((sku) => sku.normalize("NFKC").toUpperCase()), quantity: z.number().int().min(1).max(orderLimits.unitsPerLine) }))
-    .min(1)
-    .max(orderLimits.lines)
-    .refine((lines) => new Set(lines.map((line) => line.sku)).size === lines.length, "each SKU once")
-    .refine((lines) => lines.reduce((sum, line) => sum + line.quantity, 0) <= orderLimits.unitsPerOrder, "too many units"),
+  lines: orderLines,
 });
 
 const commandBody = z.discriminatedUnion("type", [
@@ -248,6 +251,44 @@ export function buildHttp(options: HttpOptions): FastifyInstance {
     const result = await createOrderOnce(options.pool, actor, parsed.data.commandId, { ref: parsed.data.ref, lines: parsed.data.lines });
     if (result.status !== 200) return fail(reply, request, result.status, result.body.code);
     return ok(reply, request, result.body);
+  });
+
+  // Orders from the group that named unknown or ambiguous items, waiting for
+  // a coordinator to choose the products. Nothing in a draft can be picked.
+  type DraftParams = { Params: { wid: string; did: string } };
+
+  app.get<{ Params: { wid: string } }>("/v1/workspaces/:wid/drafts", async (request, reply) => {
+    const actor = await coordinator(request, reply, options.pool);
+    if (!actor) return reply;
+    return ok(reply, request, { drafts: await drafts.drafts(options.pool, actor.workspaceId) });
+  });
+
+  app.get<DraftParams>("/v1/workspaces/:wid/drafts/:did", async (request, reply) => {
+    const actor = await coordinator(request, reply, options.pool);
+    if (!actor) return reply;
+    const found = uuid.safeParse(request.params.did).success ? await drafts.draft(options.pool, actor.workspaceId, request.params.did) : null;
+    return found ? ok(reply, request, found) : fail(reply, request, 404, "NOT_FOUND");
+  });
+
+  app.post<DraftParams>("/v1/workspaces/:wid/drafts/:did/confirm", async (request, reply) => {
+    const actor = await coordinator(request, reply, options.pool);
+    if (!actor) return reply;
+    if (!allow(request, reply, `create:${actor.memberId}`, limits.commands)) return reply;
+    const parsed = z.strictObject({ lines: orderLines }).safeParse(request.body);
+    if (!parsed.success || !uuid.safeParse(request.params.did).success) return fail(reply, request, 400, "INVALID_INPUT");
+    const result = await drafts.confirmDraft(options.pool, actor, request.params.did, parsed.data.lines);
+    if (result.ok) return ok(reply, request, { orderId: result.orderId, ref: result.ref });
+    const status = { ROLE_REQUIRED: 403, NOT_FOUND: 404, REF_TAKEN: 409, UNKNOWN_SKU: 400 } as const;
+    return fail(reply, request, status[result.code], result.code);
+  });
+
+  app.post<DraftParams>("/v1/workspaces/:wid/drafts/:did/discard", async (request, reply) => {
+    const actor = await coordinator(request, reply, options.pool);
+    if (!actor) return reply;
+    if (!uuid.safeParse(request.params.did).success) return fail(reply, request, 404, "NOT_FOUND");
+    const result = await drafts.discardDraft(options.pool, actor, request.params.did);
+    if (result !== "DISCARDED") return fail(reply, request, result === "ROLE_REQUIRED" ? 403 : 404, result);
+    return ok(reply, request, { discarded: true });
   });
 
   // Reports and the order history export, over whole days in the viewer's time zone.

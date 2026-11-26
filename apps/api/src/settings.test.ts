@@ -67,6 +67,24 @@ describe("retention", () => {
     expect({ refs: refs.rows.map((row) => row.ref), leftovers: Number(leftovers.rows[0]!.n) }).toEqual({ refs: ["KEPT-1", "OPEN-1", "RECENT-1"], leftovers: 0 });
     expect(await purgeExpired(db.pool)).toBe(0);
   });
+
+  test("purges an old order that came from a confirmed draft, and drafts past their week", async () => {
+    const short = await workspace("Drafts", 90);
+    const old = await order(short, "DRAFTED-1", 100);
+    const lines = JSON.stringify([{ item: "mug", quantity: 1, sku: "MUG-1", candidates: [] }]);
+    await db.pool.query(
+      `insert into order_drafts (workspace_id, source_key, created_by, lines, status, order_id) values ($1, 'test:confirmed', $2, $3, 'CONFIRMED', $4)`,
+      [short.id, short.ownerId, lines, old],
+    );
+    await db.pool.query(
+      `insert into order_drafts (workspace_id, source_key, created_by, lines, expires_at) values ($1, 'test:stale', $2, $3, now() - interval '1 minute'), ($1, 'test:fresh', $2, $3, default)`,
+      [short.id, short.ownerId, lines],
+    );
+
+    expect(await purgeExpired(db.pool)).toBe(1);
+    const left = await db.pool.query<{ source_key: string }>("select source_key from order_drafts where workspace_id = $1", [short.id]);
+    expect(left.rows.map((row) => row.source_key)).toEqual(["test:fresh"]);
+  });
 });
 
 describe("the settings page", () => {
