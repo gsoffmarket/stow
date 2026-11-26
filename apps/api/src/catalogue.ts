@@ -7,19 +7,33 @@
 //
 // Products already in the catalogue are only changed when the import says so
 // explicitly, and active orders keep their own snapshot of names and bins.
+//
+// Aliases are other names a coordinator may type in /order. A file without an
+// aliases column leaves existing aliases alone; with one, each row's list
+// replaces that product's aliases.
 
+import { itemKey } from "@stow/telegram/commands";
 import type pg from "pg";
 import { readCsv, writeCsv } from "./csv.ts";
 import { transaction } from "./fulfilment.ts";
 
 export const importLimits = { bytes: 2 * 1024 * 1024, rows: 5000 } as const;
 
-const columns = ["sku", "name", "bin", "route_rank"] as const;
+const columns = ["sku", "name", "bin", "route_rank", "aliases"] as const;
+const aliasesPerProduct_max = 20;
 
-export type CatalogueRow = { readonly line: number; readonly sku: string; readonly name: string; readonly bin: string | null; readonly routeRank: number };
+/** CatalogueRow is one product from an import; aliases is null when the file has no aliases column. */
+export type CatalogueRow = {
+  readonly line: number;
+  readonly sku: string;
+  readonly name: string;
+  readonly bin: string | null;
+  readonly routeRank: number;
+  readonly aliases: readonly string[] | null;
+};
 export type RowError = { readonly line: number; readonly field: string; readonly problem: string };
 
-/** parseCatalogue reads CSV with a header row; sku and name are required, bin and route_rank optional. */
+/** parseCatalogue reads CSV with a header row; sku and name are required, bin, route_rank and aliases optional. */
 export function parseCatalogue(text: string): { rows: CatalogueRow[]; errors: RowError[] } {
   const errors: RowError[] = [];
   if (Buffer.byteLength(text) > importLimits.bytes) return { rows: [], errors: [{ line: 0, field: "file", problem: "larger than 2 MB" }] };
@@ -46,10 +60,22 @@ export function parseCatalogue(text: string): { rows: CatalogueRow[]; errors: Ro
     if (name.length < 1 || name.length > 120) errors.push({ line, field: "name", problem: "needs 1–120 characters" });
     if (bin.length > 32) errors.push({ line, field: "bin", problem: "longer than 32 characters" });
     if (rank !== "" && !/^-?[0-9]{1,6}$/.test(rank)) errors.push({ line, field: "route_rank", problem: "must be a whole number" });
+    const aliases = header.includes("aliases") ? parseAliases(value("aliases")) : null;
+    if (aliases?.some((alias) => alias.length > 64)) errors.push({ line, field: "aliases", problem: "each alias needs 1–64 characters" });
+    if (aliases && aliases.length > aliasesPerProduct_max) errors.push({ line, field: "aliases", problem: `more than ${aliasesPerProduct_max} aliases` });
     seen.set(sku, line);
-    rows.push({ line, sku, name, bin: bin || null, routeRank: rank === "" ? 0 : Number(rank) });
+    rows.push({ line, sku, name, bin: bin || null, routeRank: rank === "" ? 0 : Number(rank), aliases });
   });
   return { rows: errors.length > 0 ? [] : rows, errors };
+}
+
+// Aliases are separated by semicolons; one typed twice is kept once.
+function parseAliases(field: string): string[] {
+  const kept = new Map<string, string>();
+  for (const alias of field.split(";").map((part) => part.trim().replace(/\s+/g, " "))) {
+    if (alias !== "" && !kept.has(itemKey(alias))) kept.set(itemKey(alias), alias);
+  }
+  return [...kept.values()];
 }
 
 export type Fate = "NEW" | "UPDATE" | "UNCHANGED";
@@ -59,16 +85,23 @@ export type Preview = { readonly rows: readonly (CatalogueRow & { readonly fate:
 export async function preview(pool: pg.Pool, workspaceId: string, csv: string): Promise<Preview> {
   const parsed = parseCatalogue(csv);
   if (parsed.errors.length > 0) return { rows: [], errors: parsed.errors };
-  const existing = await pool.query<{ normalized_sku: string; name: string; bin: string | null; route_rank: number }>(
-    "select normalized_sku, name, bin, route_rank from products where workspace_id = $1 and normalized_sku = any($2)",
+  const existing = await pool.query<{ normalized_sku: string; name: string; bin: string | null; route_rank: number; aliases: string[] }>(
+    `select p.normalized_sku, p.name, p.bin, p.route_rank,
+            coalesce(array_agg(a.alias order by a.normalized_alias) filter (where a.alias is not null), '{}') as aliases
+     from products p left join product_aliases a on a.product_id = p.id
+     where p.workspace_id = $1 and p.normalized_sku = any($2)
+     group by p.id`,
     [workspaceId, parsed.rows.map((row) => row.sku)],
   );
   const bySku = new Map(existing.rows.map((product) => [product.normalized_sku, product]));
+  const sameAliases = (row: CatalogueRow, current: readonly string[]) =>
+    row.aliases === null || [...row.aliases].map(itemKey).sort().join(";") === current.map(itemKey).sort().join(";");
   return {
     errors: [],
     rows: parsed.rows.map((row) => {
       const current = bySku.get(row.sku);
-      const fate: Fate = !current ? "NEW" : current.name === row.name && current.bin === row.bin && current.route_rank === row.routeRank ? "UNCHANGED" : "UPDATE";
+      const isSame = current && current.name === row.name && current.bin === row.bin && current.route_rank === row.routeRank && sameAliases(row, current.aliases);
+      const fate: Fate = !current ? "NEW" : isSame ? "UNCHANGED" : "UPDATE";
       return { ...row, fate };
     }),
   };
@@ -91,10 +124,19 @@ export async function commit(pool: pg.Pool, workspaceId: string, csv: string, al
   if (updates.length > 0 && !allowUpdates) return { ok: false, code: "UPDATES_NOT_ALLOWED", skus: updates.map((row) => row.sku) };
   await transaction(pool, async (client) => {
     for (const row of checked.rows.filter((candidate) => candidate.fate !== "UNCHANGED")) {
-      await client.query(
+      const written = await client.query<{ id: string }>(
         `insert into products (workspace_id, sku, normalized_sku, name, bin, route_rank) values ($1, $2, $2, $3, $4, $5)
-         on conflict (workspace_id, normalized_sku) do update set name = excluded.name, bin = excluded.bin, route_rank = excluded.route_rank, is_active = true, updated_at = now()`,
+         on conflict (workspace_id, normalized_sku) do update set name = excluded.name, bin = excluded.bin, route_rank = excluded.route_rank, is_active = true, updated_at = now()
+         returning id`,
         [workspaceId, row.sku, row.name, row.bin, row.routeRank],
+      );
+      if (row.aliases === null) continue;
+      const productId = written.rows[0]!.id;
+      await client.query("delete from product_aliases where product_id = $1", [productId]);
+      await client.query(
+        `insert into product_aliases (workspace_id, product_id, alias, normalized_alias)
+         select $1, $2, alias, normalized from unnest($3::text[], $4::text[]) as given (alias, normalized)`,
+        [workspaceId, productId, row.aliases, row.aliases.map(itemKey)],
       );
     }
   });
@@ -102,15 +144,48 @@ export async function commit(pool: pg.Pool, workspaceId: string, csv: string, al
   return { ok: true, added: count("NEW"), updated: count("UPDATE"), unchanged: count("UNCHANGED") };
 }
 
-export type Product = { readonly sku: string; readonly name: string; readonly bin: string | null; readonly routeRank: number };
+export type Product = { readonly sku: string; readonly name: string; readonly bin: string | null; readonly routeRank: number; readonly aliases: readonly string[] };
 
 /** products lists the active catalogue in walking order. */
 export async function products(pool: pg.Pool, workspaceId: string): Promise<Product[]> {
-  const { rows } = await pool.query<{ sku: string; name: string; bin: string | null; route_rank: number }>(
-    "select sku, name, bin, route_rank from products where workspace_id = $1 and is_active order by route_rank, bin nulls last, sku limit 5000",
+  const { rows } = await pool.query<{ sku: string; name: string; bin: string | null; route_rank: number; aliases: string[] }>(
+    `select p.sku, p.name, p.bin, p.route_rank,
+            coalesce(array_agg(a.alias order by a.alias) filter (where a.alias is not null), '{}') as aliases
+     from products p left join product_aliases a on a.product_id = p.id
+     where p.workspace_id = $1 and p.is_active
+     group by p.id
+     order by p.route_rank, p.bin nulls last, p.sku limit 5000`,
     [workspaceId],
   );
-  return rows.map((row) => ({ sku: row.sku, name: row.name, bin: row.bin, routeRank: row.route_rank }));
+  return rows.map((row) => ({ sku: row.sku, name: row.name, bin: row.bin, routeRank: row.route_rank, aliases: row.aliases }));
+}
+
+/** Match is what one typed order item names in the catalogue. */
+export type Match = { readonly kind: "MATCHED"; readonly sku: string } | { readonly kind: "UNKNOWN" } | { readonly kind: "AMBIGUOUS"; readonly skus: readonly string[] };
+
+/**
+ * matchItems finds the product each typed item names. An exact SKU always
+ * wins; otherwise an alias held by exactly one active product matches it.
+ * An alias held by several is ambiguous, and nothing is ever matched by
+ * similarity: a near miss is unknown, for a person to fix.
+ */
+export async function matchItems(client: pg.ClientBase | pg.Pool, workspaceId: string, items: readonly string[]): Promise<Match[]> {
+  const skuOf = (item: string) => item.normalize("NFKC").toUpperCase().trim();
+  const { rows } = await client.query<{ key: string; sku: string; via: "SKU" | "ALIAS" }>(
+    `select p.normalized_sku as key, p.sku, 'SKU' as via from products p
+     where p.workspace_id = $1 and p.is_active and p.normalized_sku = any($2)
+     union all
+     select a.normalized_alias, p.sku, 'ALIAS' from product_aliases a join products p on p.id = a.product_id
+     where a.workspace_id = $1 and p.is_active and a.normalized_alias = any($3)`,
+    [workspaceId, items.map(skuOf), items.map(itemKey)],
+  );
+  return items.map((item): Match => {
+    const exact = rows.find((row) => row.via === "SKU" && row.key === skuOf(item));
+    if (exact) return { kind: "MATCHED", sku: exact.sku };
+    const named = rows.filter((row) => row.via === "ALIAS" && row.key === itemKey(item)).map((row) => row.sku).sort();
+    if (named.length === 1) return { kind: "MATCHED", sku: named[0]! };
+    return named.length === 0 ? { kind: "UNKNOWN" } : { kind: "AMBIGUOUS", skus: named };
+  });
 }
 
 /**
@@ -119,5 +194,5 @@ export async function products(pool: pg.Pool, workspaceId: string): Promise<Prod
  */
 export async function catalogueCsv(pool: pg.Pool, workspaceId: string): Promise<string> {
   const listed = await products(pool, workspaceId);
-  return writeCsv([columns, ...listed.map((product) => [product.sku, product.name, product.bin ?? "", product.routeRank])]);
+  return writeCsv([columns, ...listed.map((product) => [product.sku, product.name, product.bin ?? "", product.routeRank, product.aliases.join("; ")])]);
 }

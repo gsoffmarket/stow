@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
-import { catalogueCsv, commit, parseCatalogue, preview } from "./catalogue.ts";
+import { catalogueCsv, commit, matchItems, parseCatalogue, preview } from "./catalogue.ts";
 import { createTestDatabase, type TestDatabase } from "./db/testdb.ts";
 import { createOrder } from "./fulfilment.ts";
 
@@ -10,8 +10,8 @@ describe("parseCatalogue", () => {
     expect(parseCatalogue(csv)).toEqual({
       errors: [],
       rows: [
-        { line: 2, sku: "TS-BLK-M", name: 'Black T-shirt, size "M"', bin: "A-03", routeRank: 1 },
-        { line: 4, sku: "CP-WHT", name: "White\ncap", bin: null, routeRank: 0 },
+        { line: 2, sku: "TS-BLK-M", name: 'Black T-shirt, size "M"', bin: "A-03", routeRank: 1, aliases: null },
+        { line: 4, sku: "CP-WHT", name: "White\ncap", bin: null, routeRank: 0, aliases: null },
       ],
     });
   });
@@ -27,6 +27,13 @@ describe("parseCatalogue", () => {
         { line: 5, field: "route_rank", problem: "must be a whole number" },
       ],
     });
+  });
+
+  test("reads aliases separated by semicolons, keeping each name once", () => {
+    const parsed = parseCatalogue("sku,name,aliases\nTS-BLK-M,Black T-shirt,black tee; Black  Tee ;;tee\nCP-WHT,White cap,\n");
+    expect(parsed.rows.map((row) => row.aliases)).toEqual([["black tee", "tee"], []]);
+    const long = parseCatalogue(`sku,name,aliases\nA,Apple,${"a".repeat(65)}\n`);
+    expect(long.errors).toEqual([{ line: 2, field: "aliases", problem: "each alias needs 1–64 characters" }]);
   });
 
   test("needs sku and name and refuses unknown columns", () => {
@@ -80,10 +87,44 @@ describe("import", () => {
     const other = (await db.pool.query<{ id: string }>("insert into workspaces (name) values ('Export') returning id")).rows[0]!.id;
     await commit(db.pool, other, 'sku,name,bin,route_rank\nE1,"Eggs, large",E-01,2\nE2,=HYPERLINK("x"),,1\n', false);
     const csv = await catalogueCsv(db.pool, other);
-    expect(csv).toBe('sku,name,bin,route_rank\r\nE2,"\'=HYPERLINK(""x"")",,1\r\nE1,"Eggs, large",E-01,2\r\n');
+    expect(csv).toBe('sku,name,bin,route_rank,aliases\r\nE2,"\'=HYPERLINK(""x"")",,1,\r\nE1,"Eggs, large",E-01,2,\r\n');
     expect(parseCatalogue(csv).rows.map((row) => [row.sku, row.name, row.bin, row.routeRank])).toEqual([
       ["E2", "'=HYPERLINK(\"x\")", null, 1],
       ["E1", "Eggs, large", "E-01", 2],
     ]);
+  });
+
+  test("aliases are written with the product, kept when a file has no aliases column, and exported", async () => {
+    const ws = (await db.pool.query<{ id: string }>("insert into workspaces (name) values ('Aliases') returning id")).rows[0]!.id;
+    await commit(db.pool, ws, "sku,name,aliases\nTS-BLK-M,Black T-shirt,black tee; tee\nCP-WHT,White cap,cap\n", false);
+    expect((await preview(db.pool, ws, "sku,name\nTS-BLK-M,Black T-shirt\n")).rows[0]!.fate).toBe("UNCHANGED");
+    expect((await preview(db.pool, ws, "sku,name,aliases\nTS-BLK-M,Black T-shirt,tee\n")).rows[0]!.fate).toBe("UPDATE");
+    await commit(db.pool, ws, "sku,name\nTS-BLK-M,Black T-shirt (M)\n", true);
+    expect(await catalogueCsv(db.pool, ws)).toBe("sku,name,bin,route_rank,aliases\r\nCP-WHT,White cap,,0,cap\r\nTS-BLK-M,Black T-shirt (M),,0,black tee; tee\r\n");
+  });
+});
+
+describe("matchItems", () => {
+  let db: TestDatabase;
+  let workspaceId: string;
+  beforeAll(async () => {
+    db = await createTestDatabase();
+    workspaceId = (await db.pool.query<{ id: string }>("insert into workspaces (name) values ('Match') returning id")).rows[0]!.id;
+    await commit(db.pool, workspaceId, "sku,name,aliases\nCP-WHT,White cap,cap; white cap\nCP-GRY,Grey cap,cap\nTEE,Plain tee,\nTS-BLK-M,Black T-shirt,tee; Black Tee\nOLD,Retired,retired\n", false);
+    await db.pool.query("update products set is_active = false where workspace_id = $1 and sku = 'OLD'", [workspaceId]);
+  });
+  afterAll(async () => {
+    await db.drop();
+  });
+
+  test.each([
+    { name: "an exact SKU, in any case", item: "cp-wht", match: { kind: "MATCHED", sku: "CP-WHT" } },
+    { name: "an alias held by one product, spaced and cased freely", item: "BLACK  tee", match: { kind: "MATCHED", sku: "TS-BLK-M" } },
+    { name: "a SKU that is also another product's alias", item: "tee", match: { kind: "MATCHED", sku: "TEE" } },
+    { name: "an alias held by several products", item: "Cap", match: { kind: "AMBIGUOUS", skus: ["CP-GRY", "CP-WHT"] } },
+    { name: "a near miss", item: "white caps", match: { kind: "UNKNOWN" } },
+    { name: "an inactive product's alias", item: "retired", match: { kind: "UNKNOWN" } },
+  ])("matches $name", async ({ item, match }) => {
+    expect(await matchItems(db.pool, workspaceId, [item])).toEqual([match]);
   });
 });

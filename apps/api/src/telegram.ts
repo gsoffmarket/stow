@@ -14,6 +14,7 @@ import type pg from "pg";
 import type { BotApi, Button, CallbackQuery, Message, Result, Update } from "@stow/telegram/botapi";
 import { parseCommand, parseOrder, parseRefAndText, parseRevise, type Command as BotCommand, type OrderError } from "@stow/telegram/commands";
 import { reducedTarget, renderException, renderReply, renderStatus, type ExceptionNotice } from "@stow/telegram/status";
+import { matchItems, type Match } from "./catalogue.ts";
 import { postNote } from "./messages.ts";
 import { createOrder, loadOrder, runCommand, transaction, type Command, type CommandResult, type RevisionChange, type Role } from "./fulfilment.ts";
 
@@ -156,7 +157,7 @@ const helpText = [
   "In your work group: /stow_connect connects it to your workspace.",
   "",
   "/order [REF] then one line per item:",
-  "SKU x QTY",
+  "SKU x QTY (a product's alias works in place of its SKU)",
   "",
   "/revise REF SKU QTY sets a new target (0 removes it).",
   "/cancel REF reason cancels an order.",
@@ -314,17 +315,36 @@ async function intake(telegram: Telegram, message: StoredMessage, command: NonNu
   }
   const parsed = parseOrder(command);
   if (!parsed.ok) return `Order not created:\n${parsed.errors.map(describe).join("\n")}`;
+  const matches = await matchItems(telegram.pool, access.workspace_id, parsed.order.lines.map((line) => line.item));
+  const resolved = resolveLines(parsed.order.lines, matches);
+  if (!resolved.ok) return `Order not created:\n${resolved.problems.join("\n")}`;
   const created = await createOrder(telegram.pool, {
     workspaceId: access.workspace_id,
     createdBy: access.member_id,
     sourceKey: `telegram:${telegram.botAlias}:${message.chatId}:${message.messageId}`,
     connectionId: access.connection_id,
     sourceMessageId: String(message.messageId),
-    request: parsed.order,
+    request: { ref: parsed.order.ref, lines: parsed.order.lines.map((line, index) => ({ sku: resolved.skus[index]!, quantity: line.quantity })) },
   });
   if (created.ok) return null; // The status message from the outbox is the confirmation.
   if ("unknownSkus" in created) return `Order not created. Unknown SKU: ${created.unknownSkus.join(", ")}`;
   return "Order not created: that reference is already used.";
+}
+
+// The SKU each line names, or what a person has to fix first: unknown items,
+// items several products answer to, and two lines naming the same product.
+function resolveLines(lines: readonly { item: string }[], matches: readonly Match[]): { ok: true; skus: string[] } | { ok: false; problems: string[] } {
+  const problems: string[] = [];
+  const firstLine = new Map<string, number>();
+  matches.forEach((match, index) => {
+    const where = `line ${index + 1}: "${lines[index]!.item}"`;
+    if (match.kind === "UNKNOWN") problems.push(`${where} is not in the catalogue`);
+    else if (match.kind === "AMBIGUOUS") problems.push(`${where} could be ${match.skus.join(" or ")}`);
+    else if (firstLine.has(match.sku)) problems.push(`${where} is ${match.sku} again, as on line ${firstLine.get(match.sku)}`);
+    else firstLine.set(match.sku, index + 1);
+  });
+  if (problems.length > 0) return { ok: false, problems };
+  return { ok: true, skus: [...firstLine.keys()] };
 }
 
 function describe(error: OrderError): string {
