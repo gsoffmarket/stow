@@ -404,3 +404,47 @@ function setPaused(order: Order, workerId: string, expected: Expected, isPaused:
   if (order.isPaused === isPaused) return { ok: false, code: "NO_CHANGE" };
   return { ok: true, order: { ...order, isPaused, version: order.version + 1 } };
 }
+
+/** batchLimits bounds how many orders one picker carries at once (PRD §7.6). */
+export const batchLimits = { min: 2, max: 5 } as const;
+
+/** BatchStep is the one thing a picker carrying several orders should do next. */
+export type BatchStep = { readonly orderId: string; readonly plan: Plan };
+
+/**
+ * planBatch picks the next step across every order a picker is carrying,
+ * each in its own tote. Each order keeps its own rules; this only decides
+ * which order's next step comes first:
+ *
+ *   1. anything to acknowledge (a revision or a coordinator's decision),
+ *      because the picker must not act on a plan they have not seen;
+ *   2. a finished order's review, so completed totes leave the cart;
+ *   3. returns, before any new pick, on any order;
+ *   4. picks, in walking order across all orders.
+ *
+ * A blocked or paused order waits on its own while the others continue,
+ * because its tote is kept apart. If nothing can move, the first open
+ * order's plan is returned so the screen can say why; null means every
+ * order in the batch is closed.
+ */
+export function planBatch(orders: readonly Order[], workerId: string): BatchStep | null {
+  const steps = orders.map((order) => ({ order, plan: plan(order, workerId) }));
+  const first = (match: (step: (typeof steps)[number]) => boolean) => steps.find(match);
+  const acknowledge = first(({ plan }) => plan.kind === "REVISION_ACK" || plan.kind === "RESOLUTION_ACK");
+  if (acknowledge) return { orderId: acknowledge.order.id, plan: acknowledge.plan };
+  const review = first(({ plan }) => plan.kind === "REVIEW_COMPLETE" || plan.kind === "REVIEW_CANCEL" || plan.kind === "REVIEW_RELEASE");
+  if (review) return { orderId: review.order.id, plan: review.plan };
+
+  const tasks = steps.flatMap(({ order, plan }) => (plan.kind === "TASK" ? [{ order, task: plan.task, line: order.lines.find((l) => l.id === plan.task.lineId)! }] : []));
+  const returning = tasks.filter(({ task }) => task.kind === "RETURN");
+  const pool = returning.length > 0 ? returning : tasks;
+  const next = [...pool].sort(
+    (a, b) =>
+      a.line.routeRank - b.line.routeRank ||
+      compareText(a.line.bin ?? "", b.line.bin ?? "") ||
+      compareText(a.order.ref, b.order.ref),
+  )[0];
+  if (next) return { orderId: next.order.id, plan: { kind: "TASK", task: next.task } };
+  const waiting = first(({ plan }) => plan.kind !== "TERMINAL");
+  return waiting ? { orderId: waiting.order.id, plan: waiting.plan } : null;
+}
