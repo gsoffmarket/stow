@@ -116,7 +116,7 @@ deploy                Docker Compose, Caddy
 docs                  architecture, deploy, evidence
 ```
 
-- [Architecture](docs/architecture.md) · [Deploy](docs/deploy.md) · [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md)
+- [User guide](https://stow.158.220.85.120.sslip.io/docs) · [Architecture](docs/architecture.md) · [Deploy](docs/deploy.md) · [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md)
 
 Built for the Heads Up hackathon (Even Realities × TVM Ventures × Daos Hub), Messaging & News track. All code was written during the hackathon, starting 26 November 2026. It uses open-source libraries, the Even Hub SDK, CLI and simulator, and the Telegram Bot API.
 
