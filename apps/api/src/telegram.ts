@@ -45,12 +45,15 @@ function commandMessage(message: Message | undefined): StoredMessage | null {
 
 /** processInbox handles up to one batch of pending commands and returns how many it took. */
 export async function processInbox(telegram: Telegram): Promise<number> {
-  const { rows } = await telegram.pool.query<{ id: string; payload: StoredMessage; attempts: number }>(
+  const { rows } = await telegram.pool.query<{ id: string; update_id: string; payload: StoredMessage; attempts: number }>(
     `update telegram_inbox set attempts = attempts + 1, next_attempt_at = now() + interval '${lease_s} seconds'
      where id in (select id from telegram_inbox where status = 'PENDING' and next_attempt_at <= now()
                   order by update_id::numeric limit ${batchSize} for update skip locked)
-     returning id, payload, attempts`,
+     returning id, update_id, payload, attempts`,
   );
+  // RETURNING does not keep the subquery's order, and order matters: a
+  // /stow_bind must be handled before the /order sent right after it.
+  rows.sort((a, b) => Number(a.update_id) - Number(b.update_id));
   for (const row of rows) {
     try {
       await handle(telegram, row.payload);
@@ -171,7 +174,7 @@ function describe(error: OrderError): string {
   return `${where}${what[error.code]}`;
 }
 
-type DueRow = { id: string; workspace_id: string; order_id: string; chat_id: string; connection_id: string; attempts: number };
+type DueRow = { id: string; workspace_id: string; order_id: string; chat_id: string; connection_id: string; attempts: number; created_at: Date };
 
 /** deliverOutbox sends or edits status messages for up to one batch of queued changes. */
 export async function deliverOutbox(telegram: Telegram): Promise<number> {
@@ -182,8 +185,10 @@ export async function deliverOutbox(telegram: Telegram): Promise<number> {
      where c.id = t.connection_id and t.id in (
        select id from telegram_outbox where status in ('PENDING', 'RETRY') and next_attempt_at <= now()
        order by created_at, id limit ${batchSize} for update skip locked)
-     returning t.id, t.workspace_id, t.order_id, c.chat_id, t.connection_id, t.attempts`,
+     returning t.id, t.workspace_id, t.order_id, c.chat_id, t.connection_id, t.attempts, t.created_at`,
   );
+  // RETURNING does not keep the subquery's order; deliver oldest first.
+  rows.sort((a, b) => a.created_at.getTime() - b.created_at.getTime() || (a.id < b.id ? -1 : 1));
   for (const row of rows) await deliver(telegram, row);
   return rows.length;
 }
