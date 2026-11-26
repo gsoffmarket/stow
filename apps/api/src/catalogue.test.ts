@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
-import { commit, parseCatalogue, preview } from "./catalogue.ts";
+import { catalogueCsv, commit, parseCatalogue, preview } from "./catalogue.ts";
 import { createTestDatabase, type TestDatabase } from "./db/testdb.ts";
 import { createOrder } from "./fulfilment.ts";
 
@@ -74,5 +74,16 @@ describe("import", () => {
     await commit(db.pool, workspaceId, "sku,name,bin\nD,Dried date,D-09\n", true);
     const line = await db.pool.query("select name_snapshot, bin_snapshot from order_lines where order_id = $1", ["orderId" in created ? created.orderId : ""]);
     expect(line.rows[0]).toEqual({ name_snapshot: "Date", bin_snapshot: "D-01" });
+  });
+
+  test("exports the active catalogue in the columns import reads, defusing formulas", async () => {
+    const other = (await db.pool.query<{ id: string }>("insert into workspaces (name) values ('Export') returning id")).rows[0]!.id;
+    await commit(db.pool, other, 'sku,name,bin,route_rank\nE1,"Eggs, large",E-01,2\nE2,=HYPERLINK("x"),,1\n', false);
+    const csv = await catalogueCsv(db.pool, other);
+    expect(csv).toBe('sku,name,bin,route_rank\r\nE2,"\'=HYPERLINK(""x"")",,1\r\nE1,"Eggs, large",E-01,2\r\n');
+    expect(parseCatalogue(csv).rows.map((row) => [row.sku, row.name, row.bin, row.routeRank])).toEqual([
+      ["E2", "'=HYPERLINK(\"x\")", null, 1],
+      ["E1", "Eggs, large", "E-01", 2],
+    ]);
   });
 });

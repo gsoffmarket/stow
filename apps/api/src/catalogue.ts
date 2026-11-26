@@ -9,7 +9,7 @@
 // explicitly, and active orders keep their own snapshot of names and bins.
 
 import type pg from "pg";
-import { readCsv } from "./csv.ts";
+import { readCsv, writeCsv } from "./csv.ts";
 import { transaction } from "./fulfilment.ts";
 
 export const importLimits = { bytes: 2 * 1024 * 1024, rows: 5000 } as const;
@@ -111,4 +111,13 @@ export async function products(pool: pg.Pool, workspaceId: string): Promise<Prod
     [workspaceId],
   );
   return rows.map((row) => ({ sku: row.sku, name: row.name, bin: row.bin, routeRank: row.route_rank }));
+}
+
+/**
+ * catalogueCsv is the active catalogue in the same columns import reads, so an
+ * owner can edit it in a spreadsheet and import it back.
+ */
+export async function catalogueCsv(pool: pg.Pool, workspaceId: string): Promise<string> {
+  const listed = await products(pool, workspaceId);
+  return writeCsv([columns, ...listed.map((product) => [product.sku, product.name, product.bin ?? "", product.routeRank])]);
 }
