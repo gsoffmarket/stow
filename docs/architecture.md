@@ -20,7 +20,7 @@ Telegram group ◀── edit status message ◀── outbox ◀┘
 
 | Path | What lives there |
 |---|---|
-| `packages/order-engine/src/engine.ts` | Pure domain core: `plan` derives the next task; `claim`, `confirm`, `complete` validate and apply commands. No I/O, no clock. |
+| `packages/order-engine/src/engine.ts` | Pure domain core: `plan` derives the next task; `planBatch` chooses the next step across a picker's totes; `claim`, `confirm`, `complete` and the rest validate and apply commands. No I/O, no clock. |
 | `packages/telegram/src/commands.ts` | Strict parsing of bot commands and the `/order` grammar. |
 | `packages/telegram/src/status.ts` | Plain-text rendering of an order's status message. |
 | `packages/telegram/src/botapi.ts` | Bot API client that classifies every outcome as ok, retry, rejected or unknown. |
@@ -70,6 +70,7 @@ Telegram group ◀── edit status message ◀── outbox ◀┘
 | Status message | One bot message per order, edited in place | A message per change: noisy for the group and harder to read. |
 | Sign-in | Telegram identity everywhere: bot commands, Mini App launch data, pairing approved in the Mini App | Email via a hosted auth provider: an extra vendor and login for people who already live in Telegram. |
 | Glasses secondary actions | A More screen drawn in text containers, opened by swipe | The SDK's native menu: in simulator 0.9.5 it opened empty and could not select items. |
+| Batch picking | Each order keeps its own plan and tote; `planBatch` only orders their steps (acknowledgements, reviews, returns, then picks in walking order), and a batch is claimed all or none | A merged pick list across orders: one wrong count would be hard to attribute to an order, and a blocked order would stall the whole cart. |
 | Hosting | One VPS: Postgres, API and Caddy in Docker Compose | Serverless or Supabase-only: the Telegram loops need a process that runs continuously. |
 
 ## Defaults applied
