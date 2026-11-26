@@ -8,6 +8,7 @@ type WebApp = {
   expand(): void;
   setHeaderColor(color: string): void;
   setBackgroundColor(color: string): void;
+  BackButton?: { show(): void; hide(): void; onClick(handler: () => void): void; offClick(handler: () => void): void };
   HapticFeedback?: {
     impactOccurred(style: "light" | "medium" | "heavy"): void;
     notificationOccurred(type: "success" | "warning" | "error"): void;
@@ -32,6 +33,11 @@ export function startParam(): string | null {
   return app()?.initDataUnsafe.start_param ?? null;
 }
 
+/** startOrder is the order an "Open in Stow" link names, or null. */
+export function startOrder(): string | null {
+  return /^order_([0-9a-f-]{36})$/.exec(startParam() ?? "")?.[1] ?? null;
+}
+
 /** prepare tells Telegram the app is ready and paints its frame in Stow's canvas color. */
 export function prepare(canvas: string): void {
   const webApp = app();
@@ -40,6 +46,22 @@ export function prepare(canvas: string): void {
   webApp.expand();
   webApp.setHeaderColor(canvas);
   webApp.setBackgroundColor(canvas);
+}
+
+/**
+ * nativeBack shows Telegram's own back button while a page is open and runs
+ * onBack when it is pressed. It returns the cleanup for the page to call when
+ * it closes, or null outside Telegram, where the page draws its own button.
+ */
+export function nativeBack(onBack: () => void): (() => void) | null {
+  const button = app()?.BackButton;
+  if (!button) return null;
+  button.onClick(onBack);
+  button.show();
+  return () => {
+    button.offClick(onBack);
+    button.hide();
+  };
 }
 
 /** haptic plays feedback for an outcome that has already happened, never before. */

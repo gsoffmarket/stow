@@ -8,7 +8,7 @@ import { ApiError, commitImport, listProducts, previewImport, type PreviewRow, t
 import { copy } from "./copy.ts";
 import { usePolling } from "./polling.ts";
 import { haptic } from "./telegram.ts";
-import { PrimaryButton } from "./ui.tsx";
+import { BackLink, PrimaryButton } from "./ui.tsx";
 
 type Props = { token: string; workspaceId: string; onBack: () => void };
 type Checked = { rows: PreviewRow[]; errors: RowError[] };
@@ -59,11 +59,7 @@ export function Catalogue({ token, workspaceId, onBack }: Props) {
   return (
     <section className="flex flex-col gap-5">
       <div className="flex items-center gap-3">
-        <button onClick={onBack} aria-label={copy.catalogue.back} className="flex size-10 items-center justify-center rounded-[var(--radius-control)]">
-          <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
-            <path d="M10 3L5 8l5 5" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
-          </svg>
-        </button>
+        <BackLink label={copy.catalogue.back} onBack={onBack} />
         <h1 className="text-2xl font-medium">{copy.catalogue.title}</h1>
         {data && <span className="ml-auto text-[13px] text-text-secondary">{copy.catalogue.count(data.products.length)}</span>}
       </div>

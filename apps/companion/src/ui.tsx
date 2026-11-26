@@ -3,7 +3,8 @@
 // has not happened.
 
 import { m } from "motion/react";
-import type { ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import { nativeBack } from "./telegram.ts";
 
 const press = { type: "spring", visualDuration: 0.2, bounce: 0.1 } as const;
 
@@ -69,6 +70,31 @@ export function Mark() {
 }
 
 /** Sheet rises from the bottom; dragging it down closes it, a deliberate way out. */
+/**
+ * BackLink is a page's way back: Telegram's native back button inside
+ * Telegram, and an arrow drawn here everywhere else.
+ */
+export function BackLink({ label, onBack }: { label: string; onBack: () => void }) {
+  const [isNative, setIsNative] = useState(false);
+  // Registered once per page; the ref keeps the handler current without
+  // hiding and re-showing Telegram's button on every render.
+  const latest = useRef(onBack);
+  latest.current = onBack;
+  useEffect(() => {
+    const cleanup = nativeBack(() => latest.current());
+    setIsNative(cleanup !== null);
+    return cleanup ?? undefined;
+  }, []);
+  if (isNative) return null;
+  return (
+    <button onClick={onBack} aria-label={label} className="flex size-10 items-center justify-center rounded-[var(--radius-control)]">
+      <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
+        <path d="M10 3L5 8l5 5" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+      </svg>
+    </button>
+  );
+}
+
 export function Sheet({ label, onClose, children }: { label: string; onClose: () => void; children: ReactNode }) {
   return (
     <>

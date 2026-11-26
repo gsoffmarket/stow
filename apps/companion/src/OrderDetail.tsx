@@ -11,7 +11,7 @@ import { LiveDot, StatusChip } from "./Orders.tsx";
 import { usePolling } from "./polling.ts";
 import { Revise } from "./Revise.tsx";
 import { haptic } from "./telegram.ts";
-import { GhostButton, PrimaryButton, Sheet } from "./ui.tsx";
+import { BackLink, GhostButton, PrimaryButton, Sheet } from "./ui.tsx";
 
 type Props = { token: string; workspaceId: string; orderId: string; onBack: () => void };
 
@@ -49,11 +49,7 @@ export function OrderDetail({ token, workspaceId, orderId, onBack }: Props) {
   return (
     <section className="flex flex-col gap-5">
       <div className="flex items-center gap-3">
-        <button onClick={onBack} aria-label={copy.detail.back} className="flex size-10 items-center justify-center rounded-[var(--radius-control)]">
-          <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
-            <path d="M10 3L5 8l5 5" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
-          </svg>
-        </button>
+        <BackLink label={copy.detail.back} onBack={onBack} />
         <m.span layoutId={`ref-${order.id}`} className="font-mono text-[16px] font-medium">{order.ref}</m.span>
         <span className="ml-auto"><StatusChip order={order} /></span>
       </div>
