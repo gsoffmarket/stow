@@ -16,6 +16,7 @@ export const limits = {
   commands: { perMinute: 60, burst: 10 },
   reads: { perMinute: 120, burst: 30 },
   replies: { perMinute: 30, burst: 10 },
+  imports: { perMinute: 2, burst: 10 },
 } satisfies Record<string, Limit>;
 
 // Keeps memory bounded: when the table is this large, full buckets (keys
