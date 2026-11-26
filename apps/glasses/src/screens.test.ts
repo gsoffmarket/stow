@@ -2,7 +2,8 @@ import { describe, expect, test } from "vitest";
 import { moreScreen, pairingScreen, screenFor, type Snapshot } from "./screens.ts";
 
 const order = { id: "o1", ref: "ST-1042", revision: 2, version: "7", isCancelRequested: false, toteId: "A" };
-const empty = { changes: [], decision: null, lastCompleted: null };
+const quickReplies = [{ id: "ON_IT", text: "On it" }, { id: "FOUND", text: "Found them" }];
+const empty = { changes: [], decision: null, lastCompleted: null, note: null, quickReplies };
 
 function snapshot(plan: Snapshot["plan"], extra: Partial<Snapshot> = {}): Snapshot {
   return { workspaceId: "w", cursor: "9", order, plan, ...empty, ...extra };
@@ -25,7 +26,7 @@ describe("tasks", () => {
       body: "BIN A-03\nBLACK T-SHIRT\nTS-BLK-M\n\nPICK × 3",
       primary: { type: "CONFIRM", quantity: 3 },
     });
-    expect(screen.options.map((option) => option.label)).toEqual(["REPORT SHORTAGE", "DAMAGED ITEM", "WRONG LOCATION", "PAUSE ORDER"]);
+    expect(screen.options.map((option) => option.label)).toEqual(["REPORT SHORTAGE", "DAMAGED ITEM", "WRONG LOCATION", "MESSAGE GROUP", "PAUSE ORDER"]);
   });
 
   test("a return says RETURN, never PICK -1, and asks for the actual return", () => {
@@ -118,17 +119,17 @@ describe("the More screen", () => {
   const base = screenFor(snapshot(task("PICK")), "online");
 
   test("lists the options with a cursor, ending in Back, and tap chooses the one under it", () => {
-    expect(moreScreen(base, "ST-1042", 0)).toMatchObject({
+    expect(moreScreen(base.options, "ST-1042", 0)).toMatchObject({
       header: "ST-1042   MORE",
-      body: "> REPORT SHORTAGE\n  DAMAGED ITEM\n  WRONG LOCATION\n  PAUSE ORDER\n  BACK",
+      body: "> REPORT SHORTAGE\n  DAMAGED ITEM\n  WRONG LOCATION\n  MESSAGE GROUP\n  PAUSE ORDER\n  BACK",
       primary: { type: "REPORT", report: "SHORTAGE" },
     });
-    expect(moreScreen(base, "ST-1042", 4).primary).toEqual({ type: "BACK" });
+    expect(moreScreen(base.options, "ST-1042", 5).primary).toEqual({ type: "BACK" });
   });
 
   test("the cursor wraps both ways", () => {
-    expect(moreScreen(base, "ST-1042", 5).primary).toEqual({ type: "REPORT", report: "SHORTAGE" });
-    expect(moreScreen(base, "ST-1042", -1).primary).toEqual({ type: "BACK" });
+    expect(moreScreen(base.options, "ST-1042", 6).primary).toEqual({ type: "REPORT", report: "SHORTAGE" });
+    expect(moreScreen(base.options, "ST-1042", -1).primary).toEqual({ type: "BACK" });
   });
 });
 
@@ -143,5 +144,31 @@ describe("pairing", () => {
 
   test("says when it cannot reach the server instead of showing a stale code", () => {
     expect(pairingScreen("K7Q4-M2XP", "offline").body).toMatch(/^NOT CONNECTED/);
+  });
+});
+
+describe("coordinator notes", () => {
+  const withNote = snapshot(task("PICK"), { note: { id: "n1", body: "White caps are on the top shelf.", author: "Coordinator" } });
+
+  test("a note takes the screen with who sent it; tap marks it read", () => {
+    expect(screenFor(withNote, "online")).toMatchObject({
+      header: "ST-1042   NOTE · COORDINATOR",
+      body: "White caps are on the top shelf.",
+      footer: "TAP: GOT IT · SWIPE: REPLY",
+      primary: { type: "MARK_READ", noteId: "n1" },
+    });
+  });
+
+  test("swiping from a note offers quick replies that also mark it read", () => {
+    const options = screenFor(withNote, "online").options;
+    expect(options).toEqual([
+      { label: "ON IT", action: { type: "REPLY", replyId: "ON_IT", noteId: "n1" } },
+      { label: "FOUND THEM", action: { type: "REPLY", replyId: "FOUND", noteId: "n1" } },
+    ]);
+  });
+
+  test("a note never covers a save in progress or an unknown outcome", () => {
+    expect(screenFor(withNote, "saving").body).toMatch(/^SAVING/);
+    expect(screenFor(withNote, "uncertain").body).toMatch(/^OUTCOME UNKNOWN/);
   });
 });

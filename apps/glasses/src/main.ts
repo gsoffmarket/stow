@@ -15,7 +15,7 @@ import {
   waitForEvenAppBridge,
   type EvenAppBridge,
 } from "@evenrealities/even_hub_sdk";
-import { moreScreen, pairingScreen, screenFor, type Action, type Link, type Screen, type Snapshot } from "./screens.ts";
+import { moreScreen, pairingScreen, replyOptions, screenFor, type Action, type Link, type Option, type Screen, type Snapshot } from "./screens.ts";
 
 const apiUrl = import.meta.env.VITE_STOW_API_URL as string;
 
@@ -42,7 +42,9 @@ const regions = [
   { id: 3, name: "footer", y: 240, height: 48 },
 ] as const;
 
-type Pending = { readonly commandId: string; readonly body: object };
+// A write to the API. Commands carry their own command ID and replies a
+// client ID, so resending the same Pending after a lost answer is safe.
+type Pending = { readonly path: string; readonly body: object };
 type Pairing = { readonly pairingId: string; readonly code: string; readonly secret: string };
 
 let bridge: EvenAppBridge;
@@ -59,6 +61,8 @@ let dismissedRef: string | null = null;
 // Cursor on the More screen, or null when it is closed. It closes whenever
 // the underlying screen changes, so it can never act on a stale task.
 let moreCursor: number | null = null;
+// What the More screen lists when it is not the screen's own options (the quick replies).
+let moreList: readonly Option[] | null = null;
 let base: Screen | null = null;
 let bridgeQueue: Promise<unknown> = Promise.resolve();
 
@@ -76,9 +80,13 @@ function onBridge<T>(call: () => Promise<T>): Promise<T> {
 
 async function render(): Promise<void> {
   const underlying = credentials ? screenFor(snapshot, link, dismissedRef) : pairingScreen(pairing?.code ?? null, link);
-  if (base && (underlying.header !== base.header || underlying.body !== base.body)) moreCursor = null;
+  if (base && (underlying.header !== base.header || underlying.body !== base.body)) {
+    moreCursor = null;
+    moreList = null;
+  }
   base = underlying;
-  const next = moreCursor !== null && underlying.options.length > 0 ? moreScreen(underlying, snapshot?.order?.ref ?? "STOW", moreCursor) : underlying;
+  const choices = moreList ?? underlying.options;
+  const next = moreCursor !== null && choices.length > 0 ? moreScreen(choices, snapshot?.order?.ref ?? "STOW", moreCursor) : underlying;
   const texts = { header: next.header, body: next.body, footer: next.footer };
   if (!shown) {
     const textObject = regions.map(
@@ -202,7 +210,7 @@ async function send(command: Pending): Promise<void> {
   link = "saving";
   await render();
   try {
-    const response = await request("POST", "/commands", { commandId: command.commandId, ...command.body });
+    const response = await request("POST", command.path, command.body);
     pending = null;
     link = response.ok ? "online" : response.status === 409 ? "rejected" : "offline";
   } catch (error) {
@@ -244,6 +252,9 @@ function commandFor(action: Action): object | null {
     case "REFRESH":
     case "DISMISS":
     case "BACK":
+    case "REPLIES":
+    case "MARK_READ":
+    case "REPLY":
       return null;
   }
 }
@@ -256,9 +267,16 @@ async function perform(action: Action | null | undefined): Promise<void> {
   if (!action) return;
   if (action.type === "BACK") {
     moreCursor = null;
+    moreList = null;
+    return render();
+  }
+  if (action.type === "REPLIES") {
+    moreList = snapshot ? replyOptions(snapshot, null) : null;
+    moreCursor = 0;
     return render();
   }
   moreCursor = null;
+  moreList = null;
   if (action.type === "DISMISS") {
     dismissedRef = snapshot?.lastCompleted?.ref ?? null;
     return render();
@@ -267,9 +285,16 @@ async function perform(action: Action | null | undefined): Promise<void> {
     pairing = null;
     return pairStep();
   }
+  if (action.type === "MARK_READ") return send({ path: `/messages/${action.noteId}/read`, body: {} });
+  if (action.type === "REPLY") {
+    if (!snapshot?.order) return;
+    await send({ path: "/replies", body: { clientId: crypto.randomUUID(), orderId: snapshot.order.id, replyId: action.replyId } });
+    if (action.noteId && link === "online") await send({ path: `/messages/${action.noteId}/read`, body: {} });
+    return;
+  }
   const body = commandFor(action);
   if (!body) return refresh();
-  return send({ commandId: crypto.randomUUID(), body });
+  return send({ path: "/commands", body: { commandId: crypto.randomUUID(), ...body } });
 }
 
 function listen(): void {
@@ -277,7 +302,7 @@ function listen(): void {
     // Swipes on a text container arrive as textEvent: 1 is up, 2 is down.
     const scroll = event.textEvent?.eventType;
     if (scroll === OsEventTypeList.SCROLL_TOP_EVENT || scroll === OsEventTypeList.SCROLL_BOTTOM_EVENT) {
-      if (!base || base.options.length === 0 || link !== "online") return;
+      if (!base || (moreList ?? base.options).length === 0 || link !== "online") return;
       const step = scroll === OsEventTypeList.SCROLL_BOTTOM_EVENT ? 1 : -1;
       moreCursor = moreCursor === null ? 0 : moreCursor + step;
       void render();
