@@ -39,7 +39,15 @@ The API polls Telegram for updates, so run only one deployment per bot.
 
 ## Glasses
 
-Point the Even Hub simulator, or the Even Realities app's developer mode, at `https://YOUR_HOST/glasses/`. For a packaged `.ehpk`, build the glasses app with `VITE_STOW_API_URL=https://YOUR_HOST` and add that origin to the `network` whitelist in `apps/glasses/app.json`.
+Point the Even Hub simulator, or the Even Realities app's developer mode, at `https://YOUR_HOST/glasses/`.
+
+To build the installable package for your server:
+
+```bash
+STOW_API_URL=https://YOUR_HOST pnpm --filter @stow/glasses package
+```
+
+This writes `apps/glasses/stow.ehpk`. The server's origin is compiled into the app and put on the package's network whitelist, so build one package per server. Upload it with `pnpm --filter @stow/glasses exec evenhub upload stow.ehpk` after `evenhub login`.
 
 ## Updating
 
