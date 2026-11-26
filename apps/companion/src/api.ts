@@ -111,6 +111,42 @@ export function createOrder(token: string, workspaceId: string, commandId: strin
   return call(`/v1/workspaces/${workspaceId}/orders`, { method: "POST", token, body: { commandId, ref, lines } });
 }
 
+/** RangeQuery is whole calendar days in the viewer's time zone. */
+export type RangeQuery = { from: string; to: string; timeZone: string };
+
+export type Report = {
+  range: RangeQuery & { startsAt: string; endsAt: string };
+  orders: { created: number; completed: number; cancelled: number };
+  unitsConfirmed: number;
+  problems: number;
+  undelivered: number;
+  pickers: { name: string; completed: number; units: number }[];
+};
+
+const rangeParams = (range: RangeQuery) => new URLSearchParams({ from: range.from, to: range.to, tz: range.timeZone }).toString();
+
+export function getReport(token: string, workspaceId: string, range: RangeQuery): Promise<Report> {
+  return call(`/v1/workspaces/${workspaceId}/reports?${rangeParams(range)}`, { method: "GET", token });
+}
+
+/** ordersCsv fetches the order history file; it is text, not the usual JSON envelope. */
+export async function ordersCsv(token: string, workspaceId: string, range: RangeQuery): Promise<Blob> {
+  let response: Response;
+  try {
+    response = await fetch(`${apiUrl}/v1/workspaces/${workspaceId}/reports/orders.csv?${rangeParams(range)}`, {
+      headers: { authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(30_000),
+    });
+  } catch {
+    throw new ApiError(0, "NETWORK");
+  }
+  if (!response.ok) {
+    const payload = (await response.json().catch(() => null)) as { error?: { code: string } } | null;
+    throw new ApiError(response.status, payload?.error?.code ?? "UNKNOWN");
+  }
+  return response.blob();
+}
+
 export type Member = { id: string; name: string; role: Role; isLinked: boolean; devices: number; openOrders: number; isYou: boolean };
 
 export function listMembers(token: string, workspaceId: string): Promise<{ members: Member[] }> {

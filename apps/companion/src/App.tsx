@@ -10,6 +10,7 @@ import { Catalogue } from "./Catalogue.tsx";
 import { OrderDetail } from "./OrderDetail.tsx";
 import { Orders } from "./Orders.tsx";
 import { Pair } from "./Pair.tsx";
+import { Reports } from "./Reports.tsx";
 import { Team } from "./Team.tsx";
 import { launchData, startParam } from "./telegram.ts";
 import { Card, GhostButton, Mark, Page, PrimaryButton } from "./ui.tsx";
@@ -62,13 +63,16 @@ export function App() {
 
 function Signed({ session, view, setView }: { session: Session; view: "home" | "pair"; setView: (view: "home" | "pair") => void }) {
   const [openOrder, setOpenOrder] = useState<string | null>(null);
-  const [page, setPage] = useState<"orders" | "catalogue" | "team">("orders");
+  const [page, setPage] = useState<"orders" | "catalogue" | "team" | "reports">("orders");
   const pickers = session.memberships.filter((m) => m.role === "PICKER" || m.role === "OWNER");
   const coordinates = session.memberships.find((m) => m.role === "COORDINATOR" || m.role === "OWNER");
   if (session.memberships.length === 0) return <Message title={copy.noWorkspace.title} body={copy.noWorkspace.body} />;
   if (view === "pair" && pickers.length > 0) return <Pair token={session.token} workspaces={pickers} onBack={() => setView("home")} />;
   if (coordinates && page === "catalogue") {
     return <Catalogue token={session.token} workspaceId={coordinates.workspaceId} onBack={() => setPage("orders")} />;
+  }
+  if (coordinates && page === "reports") {
+    return <Reports token={session.token} workspaceId={coordinates.workspaceId} onBack={() => setPage("orders")} />;
   }
   if (coordinates && page === "team") {
     return <Team token={session.token} workspaceId={coordinates.workspaceId} isOwner={coordinates.role === "OWNER"} onBack={() => setPage("orders")} />;
@@ -80,9 +84,10 @@ function Signed({ session, view, setView }: { session: Session; view: "home" | "
     return (
       <>
         <Orders token={session.token} workspaceId={coordinates.workspaceId} onOpen={setOpenOrder} />
-        <nav className="grid grid-flow-col auto-cols-fr gap-2">
+        <nav className="grid grid-cols-2 gap-2">
           <GhostButton onClick={() => setPage("catalogue")}>{copy.catalogue.open}</GhostButton>
           <GhostButton onClick={() => setPage("team")}>{copy.team.open}</GhostButton>
+          <GhostButton onClick={() => setPage("reports")}>{copy.reports.open}</GhostButton>
           {pickers.length > 0 && <GhostButton onClick={() => setView("pair")}>{copy.orders.pairGlasses}</GhostButton>}
         </nav>
       </>
