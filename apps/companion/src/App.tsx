@@ -13,6 +13,7 @@ import { Orders } from "./Orders.tsx";
 import { Help } from "./Help.tsx";
 import { Pair } from "./Pair.tsx";
 import { Reports } from "./Reports.tsx";
+import { Sessions } from "./Sessions.tsx";
 import { Team } from "./Team.tsx";
 import { launchData, startOrder, startParam } from "./telegram.ts";
 import { Card, GhostButton, Mark, Page, PrimaryButton } from "./ui.tsx";
@@ -66,7 +67,7 @@ export function App() {
 function Signed({ session, view, setView }: { session: Session; view: "home" | "pair"; setView: (view: "home" | "pair") => void }) {
   // An "Open in Stow" link from a group status message opens straight on its order.
   const [openOrder, setOpenOrder] = useState<string | null>(startOrder);
-  const [page, setPage] = useState<"orders" | "catalogue" | "team" | "reports" | "help">("orders");
+  const [page, setPage] = useState<"orders" | "catalogue" | "team" | "sessions" | "reports" | "help">("orders");
   const pickers = session.memberships.filter((m) => m.role === "PICKER" || m.role === "OWNER");
   const coordinates = session.memberships.find((m) => m.role === "COORDINATOR" || m.role === "OWNER");
   if (session.memberships.length === 0) return <Message title={copy.noWorkspace.title} body={copy.noWorkspace.body} />;
@@ -77,6 +78,9 @@ function Signed({ session, view, setView }: { session: Session; view: "home" | "
   }
   if (coordinates && page === "reports") {
     return <Reports token={session.token} workspaceId={coordinates.workspaceId} onBack={() => setPage("orders")} />;
+  }
+  if (coordinates && page === "sessions") {
+    return <Sessions token={session.token} workspaceId={coordinates.workspaceId} onBack={() => setPage("orders")} />;
   }
   if (coordinates && page === "team") {
     return <Team token={session.token} workspaceId={coordinates.workspaceId} isOwner={coordinates.role === "OWNER"} onBack={() => setPage("orders")} />;
@@ -91,6 +95,7 @@ function Signed({ session, view, setView }: { session: Session; view: "home" | "
         <nav className="grid grid-cols-2 gap-2">
           <GhostButton onClick={() => setPage("catalogue")}>{copy.catalogue.open}</GhostButton>
           <GhostButton onClick={() => setPage("team")}>{copy.team.open}</GhostButton>
+          <GhostButton onClick={() => setPage("sessions")}>{copy.sessions.open}</GhostButton>
           <GhostButton onClick={() => setPage("reports")}>{copy.reports.open}</GhostButton>
           <GhostButton onClick={() => setPage("help")}>{copy.help.open}</GhostButton>
           {pickers.length > 0 && <GhostButton onClick={() => setView("pair")}>{copy.orders.pairGlasses}</GhostButton>}

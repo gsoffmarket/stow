@@ -199,3 +199,49 @@ export async function pickers(pool: pg.Pool, workspaceId: string): Promise<Picke
   );
   return rows.map((row) => ({ id: row.id, name: row.name, openOrders: row.open_orders }));
 }
+
+/** GlassesSession is one paired pair of glasses and the work its picker holds. */
+export type GlassesSession = {
+  readonly id: string;
+  readonly label: string;
+  readonly picker: string;
+  readonly pairedAt: string;
+  readonly lastSeenAt: string | null;
+  /** Measured on the server's clock, so a phone with the wrong time cannot fake presence. */
+  readonly isConnected: boolean;
+  readonly orders: readonly { readonly ref: string; readonly toteId: string | null }[];
+};
+
+// Glasses poll every 1.5 s and record presence at most every 30 s, so a
+// device unheard for 90 s has stopped polling: closed, asleep or offline.
+const connected_s = 90;
+
+/**
+ * sessions lists every live device and what its picker holds. A device that
+ * stops polling is shown as last seen, never as idle: its picker may still be
+ * standing at a shelf with goods in a tote.
+ */
+export async function sessions(pool: pg.Pool, workspaceId: string): Promise<GlassesSession[]> {
+  const { rows } = await pool.query<{
+    id: string; label: string; picker: string; created_at: Date; last_seen_at: Date | null; is_connected: boolean; orders: { ref: string; tote_id: string | null }[];
+  }>(
+    `select d.id, d.label, m.display_name as picker, d.created_at, d.last_seen_at,
+            coalesce(d.last_seen_at > now() - make_interval(secs => ${connected_s}), false) as is_connected,
+            coalesce((select json_agg(json_build_object('ref', o.ref, 'tote_id', a.tote_id) order by a.created_at)
+                      from assignments a join orders o on o.id = a.order_id
+                      where a.worker_id = m.id and a.released_at is null and o.terminal is null), '[]') as orders
+     from device_tokens d join members m on m.workspace_id = d.workspace_id and m.id = d.member_id
+     where d.workspace_id = $1 and d.revoked_at is null and d.expires_at > now() and m.removed_at is null
+     order by d.last_seen_at desc nulls last, m.display_name, d.id limit 200`,
+    [workspaceId],
+  );
+  return rows.map((row) => ({
+    id: row.id,
+    label: row.label,
+    picker: row.picker,
+    pairedAt: row.created_at.toISOString(),
+    lastSeenAt: row.last_seen_at?.toISOString() ?? null,
+    isConnected: row.is_connected,
+    orders: row.orders.map((order) => ({ ref: order.ref, toteId: order.tote_id })),
+  }));
+}

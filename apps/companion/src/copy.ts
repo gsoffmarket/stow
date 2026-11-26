@@ -185,6 +185,19 @@ export const copy = {
     exporting: "Preparing…",
     exportHint: "One row per order created in these days, times in UTC.",
   },
+  sessions: {
+    open: "Sessions",
+    title: "Sessions",
+    back: "Back to orders",
+    empty: "No glasses are paired. Pickers pair from their glasses with a code they enter here.",
+    connected: "Connected",
+    lastSeen: (ago: string) => `Last seen ${ago}`,
+    neverSeen: "Not seen since pairing",
+    holding: (orders: { ref: string; toteId: string | null }[]) =>
+      orders.map((order) => (order.toteId ? `${order.ref} · tote ${order.toteId}` : order.ref)).join(", "),
+    free: "No open orders",
+    hint: "Glasses that stop updating are shown as last seen, not idle: the picker may still be holding goods. To end a session, an owner revokes the glasses on the Team page.",
+  },
   team: {
     open: "Team",
     title: "Team",

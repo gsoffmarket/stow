@@ -13,7 +13,7 @@ import { limits as orderLimits, outstandingPick, outstandingReturn, type Order, 
 import { createOrderOnce, runCommand, startBatch, workerView, type Command, type Role } from "./fulfilment.ts";
 import * as devices from "./devices.ts";
 import { markRead, postNote, quickReplies, sendReply } from "./messages.ts";
-import { listOrders, orderDetail, pickers, type Cursor } from "./console.ts";
+import { listOrders, orderDetail, pickers, sessions, type Cursor } from "./console.ts";
 import * as catalogue from "./catalogue.ts";
 import * as members from "./members.ts";
 import * as reports from "./reports.ts";
@@ -275,6 +275,14 @@ export function buildHttp(options: HttpOptions): FastifyInstance {
       .send(csv);
   });
 
+  // Paired glasses and what each picker holds. Read-only: ending a session is
+  // the owner's Revoke on the Team page.
+  app.get<{ Params: { wid: string } }>("/v1/workspaces/:wid/sessions", async (request, reply) => {
+    const actor = await coordinator(request, reply, options.pool);
+    if (!actor) return reply;
+    return ok(reply, request, { sessions: await sessions(options.pool, actor.workspaceId) });
+  });
+
   // The Workers page: everyone can see the team; only owners change it.
   app.get<{ Params: { wid: string } }>("/v1/workspaces/:wid/members", async (request, reply) => {
     const actor = await coordinator(request, reply, options.pool);
@@ -482,9 +490,16 @@ async function authenticate(request: FastifyRequest<{ Params: { wid: string } }>
     fail(reply, request, 401, "AUTH_REQUIRED");
     return null;
   }
+  // Recording presence rides on the same round trip, at most every 30 seconds.
   const { rows } = await pool.query<{ workspace_id: string; member_id: string; role: Role }>(
-    `select d.workspace_id, d.member_id, m.role from device_tokens d join members m on m.workspace_id = d.workspace_id and m.id = d.member_id
-     where d.token_hash = $1 and d.revoked_at is null and d.expires_at > now() and m.role in ('PICKER', 'OWNER')`,
+    `with live as (
+       select d.id, d.workspace_id, d.member_id, m.role, d.last_seen_at from device_tokens d join members m on m.workspace_id = d.workspace_id and m.id = d.member_id
+       where d.token_hash = $1 and d.revoked_at is null and d.expires_at > now() and m.role in ('PICKER', 'OWNER')
+     ), seen as (
+       update device_tokens set last_seen_at = now()
+       where id in (select id from live where last_seen_at is null or last_seen_at < now() - interval '30 seconds')
+     )
+     select workspace_id, member_id, role from live`,
     [hashToken(token)],
   );
   const device = rows[0];
@@ -521,7 +536,6 @@ async function coordinator(request: FastifyRequest<{ Params: { wid: string } }>,
   return { workspaceId: membership.workspaceId, memberId: membership.memberId, role: membership.role };
 }
 
-/** hashToken is how device tokens are stored and looked up. */
 // A cursor is opaque to clients: base64url JSON of the last row's sort key.
 // undefined means it did not parse, as distinct from no cursor at all.
 function parseCursor(raw: string): Cursor | undefined {
@@ -533,6 +547,7 @@ function parseCursor(raw: string): Cursor | undefined {
   }
 }
 
+/** hashToken is how device tokens are stored and looked up. */
 export function hashToken(token: string): string {
   return createHash("sha256").update(token).digest("hex");
 }

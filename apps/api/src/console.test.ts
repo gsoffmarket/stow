@@ -3,7 +3,7 @@ import type { FastifyInstance } from "fastify";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { createTestDatabase, type TestDatabase } from "./db/testdb.ts";
 import { createOrder, runCommand, workerView, type Actor } from "./fulfilment.ts";
-import { buildHttp } from "./http.ts";
+import { buildHttp, hashToken } from "./http.ts";
 
 const botToken = "123456:test-token-for-signing-launch-data";
 
@@ -254,5 +254,41 @@ describe("searching and paging the order list", () => {
   test("refuses a cursor it did not issue", async () => {
     const refused = await get(`/v1/workspaces/${otherWorkspace}/orders?view=active&cursor=bm9wZQ`, headers);
     expect({ status: refused.statusCode, code: refused.json().error.code }).toEqual({ status: 400, code: "INVALID_CURSOR" });
+  });
+});
+
+describe("sessions", () => {
+  type Listed = { label: string; picker: string; isConnected: boolean; lastSeenAt: string | null; orders: { ref: string; toteId: string | null }[] };
+  const listSessions = async (): Promise<Listed[]> => (await get(`/v1/workspaces/${workspaceId}/sessions`)).json().data.sessions;
+
+  test("records presence when the glasses poll, at most every 30 seconds", async () => {
+    const { picker } = await pickedOrder();
+    const token = randomUUID().replaceAll("-", "");
+    await db.pool.query("insert into device_tokens (workspace_id, member_id, label, token_hash, expires_at) values ($1, $2, 'Seen G2', $3, now() + interval '1 hour')", [workspaceId, picker.memberId, hashToken(token)]);
+    const poll = () => app.inject({ method: "GET", url: `/v1/workspaces/${workspaceId}/worker/snapshot`, headers: { authorization: `Bearer ${token}` } });
+    const seen = async () => (await db.pool.query<{ at: Date }>("select last_seen_at as at from device_tokens where token_hash = $1", [hashToken(token)])).rows[0]!.at;
+
+    expect((await poll()).statusCode).toBe(200);
+    const first = await seen();
+    await poll();
+    expect({ first: first !== null, unchanged: (await seen()).getTime() === first.getTime() }).toEqual({ first: true, unchanged: true });
+  });
+
+  test("shows a connected picker's order and tote, and a silent one as last seen, still holding it", async () => {
+    const { ref, picker } = await pickedOrder();
+    await db.pool.query("insert into device_tokens (workspace_id, member_id, label, token_hash, expires_at, last_seen_at) values ($1, $2, 'G2', $3, now() + interval '1 hour', now())", [workspaceId, picker.memberId, hashToken(randomUUID())]);
+    const holding = (listed: Listed[]) => listed.find((session) => session.orders.some((order) => order.ref === ref));
+    expect(holding(await listSessions())).toMatchObject({ isConnected: true, orders: [{ ref, toteId: "A" }] });
+
+    await db.pool.query("update device_tokens set last_seen_at = now() - interval '5 minutes' where member_id = $1", [picker.memberId]);
+    const silent = holding(await listSessions());
+    expect({ isConnected: silent?.isConnected, hasLastSeen: silent?.lastSeenAt !== null, orders: silent?.orders }).toEqual({ isConnected: false, hasLastSeen: true, orders: [{ ref, toteId: "A" }] });
+  });
+
+  test("leaves out revoked glasses and is closed to pickers", async () => {
+    const { picker } = await pickedOrder();
+    await db.pool.query("insert into device_tokens (workspace_id, member_id, label, token_hash, expires_at, revoked_at) values ($1, $2, 'Revoked G2', $3, now() + interval '1 hour', now())", [workspaceId, picker.memberId, hashToken(randomUUID())]);
+    expect((await listSessions()).some((session) => session.label === "Revoked G2")).toBe(false);
+    expect((await get(`/v1/workspaces/${workspaceId}/sessions`, pickerHeaders)).statusCode).toBe(404);
   });
 });
