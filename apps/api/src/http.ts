@@ -15,6 +15,7 @@ import * as devices from "./devices.ts";
 import { markRead, postNote, quickReplies, sendReply } from "./messages.ts";
 import { listOrders, orderDetail, pickers, sessions, type Cursor } from "./console.ts";
 import * as catalogue from "./catalogue.ts";
+import * as connections from "./connections.ts";
 import * as members from "./members.ts";
 import * as reports from "./reports.ts";
 import { Limiter, limits, type Limit } from "./limits.ts";
@@ -281,6 +282,22 @@ export function buildHttp(options: HttpOptions): FastifyInstance {
     const actor = await coordinator(request, reply, options.pool);
     if (!actor) return reply;
     return ok(reply, request, { sessions: await sessions(options.pool, actor.workspaceId) });
+  });
+
+  // The Telegram page: which groups drive the workspace, and whether sending works.
+  app.get<{ Params: { wid: string } }>("/v1/workspaces/:wid/telegram", async (request, reply) => {
+    const actor = await coordinator(request, reply, options.pool);
+    if (!actor) return reply;
+    return ok(reply, request, await connections.listGroups(options.pool, actor.workspaceId));
+  });
+
+  app.post<{ Params: { wid: string; cid: string } }>("/v1/workspaces/:wid/telegram/groups/:cid/disconnect", async (request, reply) => {
+    const actor = await coordinator(request, reply, options.pool);
+    if (!actor) return reply;
+    if (!allow(request, reply, `command:${actor.memberId}`, limits.commands)) return reply;
+    if (!uuid.safeParse(request.params.cid).success) return fail(reply, request, 404, "NOT_FOUND");
+    const result = await connections.disconnectGroup(options.pool, actor, request.params.cid);
+    return result.ok ? ok(reply, request, { disconnected: true }) : fail(reply, request, result.code === "ROLE_REQUIRED" ? 403 : 404, result.code);
   });
 
   // The Workers page: everyone can see the team; only owners change it.

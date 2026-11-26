@@ -4,6 +4,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest";
 import type { BotApi, Message, Result, Update } from "@stow/telegram/botapi";
 import { createTestDatabase, type TestDatabase } from "./db/testdb.ts";
+import { disconnectGroup, listGroups } from "./connections.ts";
 import { processInbox, receive, type Telegram } from "./telegram.ts";
 
 let replies: string[];
@@ -33,7 +34,7 @@ beforeEach(() => {
 });
 
 let updateId = 1;
-function say(from: number, name: string, text: string, chat: { id: number; type: string } = { id: from, type: "private" }): Update {
+function say(from: number, name: string, text: string, chat: { id: number; type: string; title?: string } = { id: from, type: "private" }): Update {
   return { update_id: updateId++, message: { message_id: nextId++, chat, from: { id: from, is_bot: false, first_name: name }, text } };
 }
 
@@ -87,5 +88,27 @@ describe("onboarding through the bot", () => {
     const link = (await send(say(5300, "Lee", "/invite coordinator"))).match(/start=(inv_[A-Za-z0-9_-]{32})/)![1];
     await db.pool.query("update member_invites set expires_at = now() - interval '1 second'");
     expect(await send(say(6300, "Max", `/start ${link}`))).toBe("This invite link has expired. Ask for a new one.");
+  });
+});
+
+describe("the Telegram page", () => {
+  test("lists a group by name, and after a disconnect the group is ignored until it reconnects", async () => {
+    await send(say(5400, "Ife", "/setup Ikeja stockroom"));
+    const group = { id: -100555, type: "supergroup", title: "Ikeja dispatch" };
+    await send(say(5400, "Ife", "/stow_connect", group));
+    const owner = (await db.pool.query<{ workspace_id: string; id: string }>("select workspace_id, id from members where telegram_user_id = '5400'")).rows[0]!;
+    const actor = { workspaceId: owner.workspace_id, memberId: owner.id, role: "OWNER" as const };
+    const listed = await listGroups(db.pool, actor.workspaceId);
+    expect(listed).toMatchObject({ groups: [{ title: "Ikeja dispatch", connectedBy: "Ife", openOrders: 0 }], delivery: { undelivered: 0 } });
+
+    expect(await disconnectGroup(db.pool, { ...actor, role: "COORDINATOR" }, listed.groups[0]!.id)).toEqual({ ok: false, code: "ROLE_REQUIRED" });
+    expect(await disconnectGroup(db.pool, actor, listed.groups[0]!.id)).toEqual({ ok: true });
+    expect(await disconnectGroup(db.pool, actor, listed.groups[0]!.id)).toEqual({ ok: false, code: "NOT_FOUND" });
+    expect((await listGroups(db.pool, actor.workspaceId)).groups).toEqual([]);
+
+    replies = [];
+    await send(say(5400, "Ife", "/order\nX x 1", group));
+    expect(replies).toEqual([]);
+    expect(await send(say(5400, "Ife", "/stow_connect", group))).toBe("Connected to Ikeja stockroom. Orders sent here with /order now go to Stow.");
   });
 });
