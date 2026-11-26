@@ -13,7 +13,7 @@ import { limits as orderLimits, outstandingPick, outstandingReturn, type Order, 
 import { createOrderOnce, runCommand, startBatch, workerView, type Command, type Role } from "./fulfilment.ts";
 import * as devices from "./devices.ts";
 import { markRead, postNote, quickReplies, sendReply } from "./messages.ts";
-import { listOrders, orderDetail, pickers } from "./console.ts";
+import { listOrders, orderDetail, pickers, type Cursor } from "./console.ts";
 import * as catalogue from "./catalogue.ts";
 import * as members from "./members.ts";
 import * as reports from "./reports.ts";
@@ -219,11 +219,15 @@ export function buildHttp(options: HttpOptions): FastifyInstance {
 
   // The coordinator console in the Mini App: the same command runner, roles
   // and engine checks as Telegram, reached with a Mini App session.
-  app.get<{ Params: { wid: string }; Querystring: { view?: string } }>("/v1/workspaces/:wid/orders", async (request, reply) => {
+  app.get<{ Params: { wid: string }; Querystring: { view?: string; q?: string; cursor?: string } }>("/v1/workspaces/:wid/orders", async (request, reply) => {
     const actor = await coordinator(request, reply, options.pool);
     if (!actor) return reply;
     const view = z.enum(["needs_you", "active", "done"]).catch("active").parse(request.query.view);
-    return ok(reply, request, { view, orders: await listOrders(options.pool, actor.workspaceId, view) });
+    const search = request.query.q?.trim().slice(0, 40) || null;
+    const after = request.query.cursor === undefined ? null : parseCursor(request.query.cursor);
+    if (after === undefined) return fail(reply, request, 400, "INVALID_CURSOR");
+    const page = await listOrders(options.pool, actor.workspaceId, { view, search, after });
+    return ok(reply, request, { view, orders: page.orders, next: page.next && Buffer.from(JSON.stringify(page.next)).toString("base64url") });
   });
 
   app.get<{ Params: { wid: string; oid: string } }>("/v1/workspaces/:wid/orders/:oid", async (request, reply) => {
@@ -518,6 +522,17 @@ async function coordinator(request: FastifyRequest<{ Params: { wid: string } }>,
 }
 
 /** hashToken is how device tokens are stored and looked up. */
+// A cursor is opaque to clients: base64url JSON of the last row's sort key.
+// undefined means it did not parse, as distinct from no cursor at all.
+function parseCursor(raw: string): Cursor | undefined {
+  try {
+    const parsed = z.object({ updatedAt: z.iso.datetime(), id: z.uuid() }).safeParse(JSON.parse(Buffer.from(raw, "base64url").toString("utf8")));
+    return parsed.success ? parsed.data : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export function hashToken(token: string): string {
   return createHash("sha256").update(token).digest("hex");
 }
@@ -596,6 +611,7 @@ const messages: Record<string, string> = {
   ROLE_REQUIRED: "your role cannot do this",
   REF_TAKEN: "another order already uses that reference",
   INVALID_RANGE: "choose dates as YYYY-MM-DD, from no later than to, at most 366 days, with a valid time zone",
+  INVALID_CURSOR: "the page cursor is not one this server issued; load the list from the start",
   LAST_OWNER: "a workspace needs at least one owner; make someone else owner first",
   HOLDS_ORDERS: "this person still holds open orders; release or reassign them first",
   NOT_A_PICKER: "orders can only be assigned to pickers in this workspace",
