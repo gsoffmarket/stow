@@ -1,0 +1,51 @@
+// The parts of Telegram's Mini App object Stow uses. Telegram injects it from
+// telegram-web-app.js; outside Telegram it is missing or has empty initData.
+
+type WebApp = {
+  initData: string;
+  initDataUnsafe: { start_param?: string };
+  ready(): void;
+  expand(): void;
+  setHeaderColor(color: string): void;
+  setBackgroundColor(color: string): void;
+  HapticFeedback?: {
+    impactOccurred(style: "light" | "medium" | "heavy"): void;
+    notificationOccurred(type: "success" | "warning" | "error"): void;
+  };
+};
+
+declare global {
+  interface Window {
+    Telegram?: { WebApp?: WebApp };
+  }
+}
+
+const app = (): WebApp | null => (window.Telegram?.WebApp?.initData ? window.Telegram.WebApp : null);
+
+/** launchData is Telegram's signed launch data, or null outside Telegram. */
+export function launchData(): string | null {
+  return app()?.initData ?? null;
+}
+
+/** startParam is the value after ?startapp= in the link that opened the Mini App. */
+export function startParam(): string | null {
+  return app()?.initDataUnsafe.start_param ?? null;
+}
+
+/** prepare tells Telegram the app is ready and paints its frame in Stow's canvas color. */
+export function prepare(canvas: string): void {
+  const webApp = app();
+  if (!webApp) return;
+  webApp.ready();
+  webApp.expand();
+  webApp.setHeaderColor(canvas);
+  webApp.setBackgroundColor(canvas);
+}
+
+/** haptic plays feedback for an outcome that has already happened, never before. */
+export function haptic(kind: "tap" | "success" | "error"): void {
+  const feedback = app()?.HapticFeedback;
+  if (!feedback) return;
+  if (kind === "tap") feedback.impactOccurred("light");
+  else feedback.notificationOccurred(kind);
+}
