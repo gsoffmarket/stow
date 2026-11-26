@@ -14,6 +14,7 @@ import { runCommand, workerView, type Command, type Role } from "./fulfilment.ts
 import * as devices from "./devices.ts";
 import { markRead, postNote, quickReplies, sendReply } from "./messages.ts";
 import { listOrders, orderDetail } from "./console.ts";
+import { Limiter, limits, type Limit } from "./limits.ts";
 import { memberships, sessionUser, startSession, verifyLaunchData } from "./identity.ts";
 import type { Actor } from "./fulfilment.ts";
 
@@ -25,6 +26,8 @@ export type HttpOptions = {
   readonly now: () => Date;
   readonly corsAllowedOrigins: readonly string[];
   readonly logger: boolean;
+  /** True behind the Caddy proxy, so limits key on the caller's address rather than the proxy's. */
+  readonly trustProxy?: boolean;
 };
 
 type Device = { readonly workspaceId: string; readonly memberId: string; readonly role: Role };
@@ -101,7 +104,18 @@ const commandBody = z.discriminatedUnion("type", [
 
 /** buildHttp assembles the API without listening, so tests can inject requests. */
 export function buildHttp(options: HttpOptions): FastifyInstance {
+  const limiter = new Limiter();
+  // Answers 429 with Retry-After and returns false when key is over its limit.
+  const allow = (request: FastifyRequest, reply: FastifyReply, key: string, limit: Limit): boolean => {
+    const result = limiter.take(key, limit);
+    if (result.ok) return true;
+    reply.header("retry-after", String(result.retryAfter_s));
+    fail(reply, request, 429, "RATE_LIMITED");
+    return false;
+  };
+
   const app = Fastify({
+    trustProxy: options.trustProxy ?? false,
     bodyLimit: 64 * 1024,
     genReqId: () => randomUUID(),
     logger: options.logger ? { redact: ["req.headers.authorization"] } : false,
@@ -135,6 +149,7 @@ export function buildHttp(options: HttpOptions): FastifyInstance {
   });
 
   app.post("/v1/telegram/miniapp/session", async (request, reply) => {
+    if (!allow(request, reply, `signin:${request.ip}`, limits.signIn)) return reply;
     if (!options.botToken) return fail(reply, request, 503, "SERVICE_UNAVAILABLE");
     const parsed = z.strictObject({ initData: z.string().min(1).max(4096) }).safeParse(request.body);
     if (!parsed.success) return fail(reply, request, 400, "INVALID_INPUT");
@@ -153,6 +168,7 @@ export function buildHttp(options: HttpOptions): FastifyInstance {
   // Pairing. The glasses call start, poll state and exchange with the secret;
   // a signed-in picker approves from the Mini App.
   app.post("/v1/devices/pairings", async (request, reply) => {
+    if (!allow(request, reply, `pair:${request.ip}`, limits.pairingStart)) return reply;
     const parsed = z.strictObject({ label: z.string().trim().min(1).max(60) }).safeParse(request.body);
     if (!parsed.success) return fail(reply, request, 400, "INVALID_INPUT");
     return ok(reply, request, await devices.start(options.pool, parsed.data.label));
@@ -174,8 +190,10 @@ export function buildHttp(options: HttpOptions): FastifyInstance {
   });
 
   app.post("/v1/devices/pairings/approve", async (request, reply) => {
+    if (!allow(request, reply, `approve:${request.ip}`, limits.pairingApprove)) return reply;
     const telegramUserId = await miniAppUser(request, reply, options.pool);
     if (!telegramUserId) return reply;
+    if (!allow(request, reply, `approve-user:${telegramUserId}`, limits.pairingApprove)) return reply;
     const parsed = z.strictObject({ workspaceId: uuid, code: z.string().min(8).max(16) }).safeParse(request.body);
     if (!parsed.success) return fail(reply, request, 400, "INVALID_INPUT");
     const result = await devices.approve(options.pool, telegramUserId, parsed.data.workspaceId, parsed.data.code);
@@ -211,6 +229,7 @@ export function buildHttp(options: HttpOptions): FastifyInstance {
   app.post<{ Params: { wid: string } }>("/v1/workspaces/:wid/console/commands", async (request, reply) => {
     const actor = await coordinator(request, reply, options.pool);
     if (!actor) return reply;
+    if (!allow(request, reply, `command:${actor.memberId}`, limits.commands)) return reply;
     const parsed = consoleCommandBody.safeParse(request.body);
     if (!parsed.success) return fail(reply, request, 400, "INVALID_INPUT");
     const body = parsed.data;
@@ -227,6 +246,7 @@ export function buildHttp(options: HttpOptions): FastifyInstance {
   app.get<{ Params: { wid: string } }>("/v1/workspaces/:wid/worker/snapshot", async (request, reply) => {
     const device = await authenticate(request, reply, options.pool);
     if (!device) return reply;
+    if (!allow(request, reply, `read:${device.memberId}`, limits.reads)) return reply;
     const view = await workerView(options.pool, device.workspaceId, device.memberId);
     const plan =
       view.plan.kind === "TASK"
@@ -255,6 +275,7 @@ export function buildHttp(options: HttpOptions): FastifyInstance {
   app.post<{ Params: { wid: string } }>("/v1/workspaces/:wid/replies", async (request, reply) => {
     const device = await authenticate(request, reply, options.pool);
     if (!device) return reply;
+    if (!allow(request, reply, `reply:${device.memberId}`, limits.replies)) return reply;
     const parsed = z.strictObject({ clientId: uuid, orderId: uuid, replyId: z.string().max(20) }).safeParse(request.body);
     if (!parsed.success) return fail(reply, request, 400, "INVALID_INPUT");
     const result = await sendReply(options.pool, device, parsed.data.orderId, parsed.data.clientId, parsed.data.replyId);
@@ -265,6 +286,7 @@ export function buildHttp(options: HttpOptions): FastifyInstance {
   app.post<{ Params: { wid: string } }>("/v1/workspaces/:wid/commands", async (request, reply) => {
     const device = await authenticate(request, reply, options.pool);
     if (!device) return reply;
+    if (!allow(request, reply, `command:${device.memberId}`, limits.commands)) return reply;
     const parsed = commandBody.safeParse(request.body);
     if (!parsed.success) return fail(reply, request, 400, "INVALID_INPUT");
     const body = parsed.data;
@@ -433,6 +455,7 @@ const messages: Record<string, string> = {
   OPEN_EXCEPTION: "a problem is already reported on this order",
   UNKNOWN_SKU: "that SKU is not in the catalogue",
   NO_CHANGE: "nothing changed",
+  RATE_LIMITED: "too many requests; wait and try again",
   DUPLICATE_SKU: "that SKU is already in the order",
   ORDER_TOO_LARGE: "the order is over the size limit",
   IDEMPOTENCY_CONFLICT: "this command ID was already used for a different request",
