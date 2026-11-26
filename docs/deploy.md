@@ -58,6 +58,13 @@ docker compose -f deploy/compose.yaml --env-file deploy/.env up -d --build
 
 Migrations only move forward and run on start.
 
+## Public site on Vercel (optional)
+
+The landing page and the guide at `/docs` can also be served from Vercel, which rebuilds them on every merge to `main`. Telegram keeps opening the Mini App on your server; the Vercel copy only talks to that server's API.
+
+1. Create a Vercel project, connect it to the repository, and set its root directory to `apps/companion`. `apps/companion/vercel.json` sets the build and sends every path to the app, so `/docs` works.
+2. Add two environment variables for Production and Preview: `VITE_STOW_API_URL` (your server's `https://` address) and `VITE_STOW_BOT_USERNAME` (the bot's username without `@`).
+
 ## Backups
 
 The `backup` service writes a `pg_dump` every 24 hours to the `backups` volume and keeps a week. Those dumps live on the same server, so copy them somewhere else if the data matters. To restore into a fresh database:
