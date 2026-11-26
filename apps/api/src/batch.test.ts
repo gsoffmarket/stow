@@ -90,6 +90,19 @@ describe("startBatch", () => {
     expect(await start(ws, shown.slice(1))).toEqual({ status: 409, body: { code: "ASSIGNMENT_CONFLICT" } });
   });
 
+  test("starts a batch after the picker's previous order closed", async () => {
+    const ws = await workspace();
+    const [previous, ...shown] = await queue(ws, 3);
+    await run(ws, { type: "CLAIM_ORDER", ...previous!, toteId: "A" });
+    for (let step = 0; step < 3; step++) {
+      const { order, plan } = await workerView(db.pool, ws.workspaceId, ws.picker);
+      const expected = { orderId: order!.id, revision: order!.revision, version: order!.version };
+      const command: Command = plan.kind === "TASK" ? { type: "CONFIRM_TASK", ...expected, kind: plan.task.kind, lineId: plan.task.lineId, quantity: plan.task.quantity } : { type: "COMPLETE_ORDER", ...expected };
+      expect((await run(ws, command)).status).toBe(200);
+    }
+    expect(await start(ws, shown)).toMatchObject({ status: 200, body: { outcome: "APPLIED" } });
+  });
+
   test.each([
     { name: "one order", pick: (shown: Shown[]) => shown.slice(0, 1) },
     { name: "six orders", pick: (shown: Shown[]) => shown },
