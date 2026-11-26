@@ -53,6 +53,10 @@ export type Snapshot = {
     | { readonly kind: "REVISION_ACK"; readonly fromRevision: number; readonly toRevision: number }
     | { readonly kind: "RESOLUTION_ACK" | "BLOCKED"; readonly exceptionId: string }
     | { readonly kind: "TERMINAL"; readonly terminal: "COMPLETED" | "CANCELLED" };
+  /** Every order the worker carries, when picking a batch. */
+  readonly totes: readonly { readonly orderId: string; readonly ref: string; readonly toteId: string | null; readonly picked: number; readonly requested: number }[];
+  /** Queued orders that can be started together, when at least two are waiting. */
+  readonly batchOffer: readonly { readonly orderId: string; readonly ref: string; readonly revision: number; readonly version: string }[];
   readonly changes: readonly { readonly sku: string; readonly from: number; readonly to: number; readonly picked: number }[];
   readonly decision: { readonly resolution: string; readonly sku: string; readonly target: number } | null;
   readonly lastCompleted: {
@@ -79,6 +83,7 @@ export type Action =
   | { readonly type: "MARK_READ"; readonly noteId: string }
   | { readonly type: "REPLY"; readonly replyId: string; readonly noteId: string | null }
   | { readonly type: "CONFIRM"; readonly quantity: number }
+  | { readonly type: "START_BATCH"; readonly size: number }
   | { readonly type: "ACK_RESOLUTION"; readonly exceptionId: string }
   | { readonly type: "REPORT"; readonly report: ReportType };
 
@@ -169,11 +174,14 @@ export function screenFor(snapshot: Snapshot | null, link: Link, dismissedRef: s
       const { task, progress } = plan;
       const tote = task.toteId ? `TOTE ${task.toteId}` : "";
       const where = task.bin ? `BIN ${task.bin}` : "LOCATION NOT SET";
+      // With several totes on the cart, which one is as important as how many.
+      const into = snapshot.totes.length > 1 && task.toteId ? ` → TOTE ${task.toteId}` : "";
+      const from = snapshot.totes.length > 1 && task.toteId ? ` FROM TOTE ${task.toteId}` : "";
       if (task.kind === "RETURN") {
         const why = snapshot.order?.isCancelRequested ? "CANCELLED — RETURN REQUIRED\n" : "";
         return screen(
           `${task.orderRef}   ${tote}   RETURN`,
-          `${why}RETURN × ${task.quantity}\n${task.name.toUpperCase()}\n${where} · ${task.sku}`,
+          `${why}RETURN × ${task.quantity}${from}\n${task.name.toUpperCase()}\n${where} · ${task.sku}`,
           "TAP TO CONFIRM ACTUAL RETURN",
           { type: "CONFIRM", quantity: task.quantity },
           task.quantity > 1 ? returnOptions : returnOptions.slice(1),
@@ -181,7 +189,7 @@ export function screenFor(snapshot: Snapshot | null, link: Link, dismissedRef: s
       }
       return screen(
         `${task.orderRef}   ${tote}   ${progress.confirmed}/${progress.requested}`,
-        `${where}\n${task.name.toUpperCase()}\n${task.sku}\n\nPICK × ${task.quantity}`,
+        `${where}\n${task.name.toUpperCase()}\n${task.sku}\n\nPICK × ${task.quantity}${into}`,
         "TAP TO CONFIRM · SWIPE FOR MORE",
         { type: "CONFIRM", quantity: task.quantity },
         task.quantity > 1 ? pickOptions : pickOptions.slice(1),
@@ -212,10 +220,14 @@ export function screenFor(snapshot: Snapshot | null, link: Link, dismissedRef: s
       const lines = snapshot.order?.lines ?? [];
       const units = lines.reduce((sum, line) => sum + line.requested, 0);
       const size = `${lines.length} ${lines.length === 1 ? "LINE" : "LINES"} · ${units} ${units === 1 ? "UNIT" : "UNITS"}`;
-      return screen(`${ref}   NEW ORDER`, `${ref}\n${size}\nReady to pick.`, "TAP TO START", { type: "CLAIM" });
+      const batches = snapshot.batchOffer.slice(1).map((_, index) => ({ label: `BATCH OF ${index + 2}`, action: { type: "START_BATCH", size: index + 2 } as Action }));
+      const footer = batches.length > 0 ? "TAP TO START · SWIPE FOR BATCH" : "TAP TO START";
+      return screen(`${ref}   NEW ORDER`, `${ref}\n${size}\nReady to pick.`, footer, { type: "CLAIM" }, batches);
     }
-    case "REVIEW_COMPLETE":
-      return screen(`${ref}   REVIEW`, "ALL ITEMS IN THE TOTE\nCheck the tote, then complete.", "TAP TO COMPLETE", { type: "COMPLETE" }, [{ label: "PAUSE ORDER", action: { type: "PAUSE" } }]);
+    case "REVIEW_COMPLETE": {
+      const tote = snapshot.totes.length > 1 && snapshot.order?.toteId ? `TOTE ${snapshot.order.toteId}` : "THE TOTE";
+      return screen(`${ref}   REVIEW`, `ALL ITEMS IN ${tote}\nCheck the tote, then complete.`, "TAP TO COMPLETE", { type: "COMPLETE" }, [{ label: "PAUSE ORDER", action: { type: "PAUSE" } }]);
+    }
     case "REVIEW_CANCEL":
       return screen(`${ref}   CANCELLED`, "ALL ITEMS RETURNED\nClose the cancelled order.", "TAP TO CLOSE", { type: "CLOSE_CANCELLED" });
     case "TERMINAL":

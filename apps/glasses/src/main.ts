@@ -265,6 +265,7 @@ function commandFor(action: Action): object | null {
         ...expected,
         payload: { taskToken: plan.taskToken, kind: plan.task.kind, lineId: plan.task.lineId, quantity: action.quantity },
       };
+    case "START_BATCH":
     case "REFRESH":
     case "DISMISS":
     case "BACK":
@@ -316,6 +317,10 @@ async function perform(action: Action | null | undefined): Promise<void> {
     await send({ path: "/replies", body: { clientId: crypto.randomUUID(), orderId: snapshot.order.id, replyId: action.replyId } });
     if (action.noteId && link === "online") await send({ path: `/messages/${action.noteId}/read`, body: {} });
     return;
+  }
+  if (action.type === "START_BATCH") {
+    const orders = (snapshot?.batchOffer ?? []).slice(0, action.size).map((order) => ({ orderId: order.orderId, expectedRevision: order.revision, expectedVersion: order.version }));
+    return send({ path: "/batches", body: { commandId: crypto.randomUUID(), orders } });
   }
   const body = commandFor(action);
   if (!body) return refresh();
