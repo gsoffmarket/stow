@@ -135,6 +135,25 @@ describe("order intake", () => {
     expect(await orderCount(ws.workspaceId)).toBe(0);
   });
 
+  test("commands in one batch run in the order they were sent", async () => {
+    // Regression: rows came back from UPDATE ... RETURNING in arbitrary order,
+    // so an /order could run before the /stow_bind just ahead of it and be dropped.
+    const q = async (sql: string, params: unknown[]) => (await db.pool.query<{ id: string }>(sql, params)).rows[0]!.id;
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const workspaceId = await q("insert into workspaces (name) values ('Batch') returning id", []);
+      const coordinator = await q("insert into members (workspace_id, display_name, role) values ($1, 'C', 'COORDINATOR') returning id", [workspaceId]);
+      await db.pool.query("insert into products (workspace_id, sku, normalized_sku, name) values ($1, 'A', 'A', 'A')", [workspaceId]);
+      const code = randomUUID().slice(0, 8).toUpperCase();
+      await db.pool.query("insert into telegram_bind_challenges (workspace_id, member_id, code_hash, expires_at) values ($1, $2, $3, now() + interval '5 minutes')", [workspaceId, coordinator, hashCode(code)]);
+      const chatId = -Math.floor(Math.random() * 1e12);
+      const fromId = Math.floor(Math.random() * 1e9);
+      const batch = [update(chatId, fromId, `/stow_bind ${code}`), ...Array.from({ length: 8 }, (_, i) => update(chatId, fromId, `/order B${attempt}-${i}\nA x 1`))];
+      await send(...batch);
+      expect(await orderCount(workspaceId)).toBe(8);
+    }
+    while ((await deliverOutbox(telegram)) > 0);
+  });
+
   test("plain chat is never stored or answered", async () => {
     const ws = await boundWorkspace();
     await send(update(ws.chatId, ws.fromId, "TS-BLK-M x 3 please"));
