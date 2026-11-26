@@ -44,8 +44,8 @@ See [docs/architecture.md](docs/architecture.md) for the codemap, invariants and
 | Area | What it does |
 |---|---|
 | **Telegram** | `/setup`, `/stow_connect`, invite links, `/order`; `/revise`, `/cancel` and `/resolve` with preview buttons; shortage messages with Resume / Reduce / Cancel; one live status message per order; notes and picker replies |
-| **Glasses** | Pick, return, partial quantity, batches of 2–5 orders in separate totes, revision and decision acknowledgements, report a problem, pause, coordinator notes, quick replies, a Saved screen with the Telegram delivery state, pairing |
-| **Mini App** | Telegram sign-in, glasses pairing, and a coordinator console with orders, detail, revise, cancel, resolve, notes and timeline |
+| **Glasses** | Pick, return, partial quantity, batches of 2–5 orders with the tote mapping shown before starting, release an order back to the queue, opt-in auto-next, revision and decision acknowledgements, report a problem, pause, coordinator notes, quick replies, a Saved screen with the Telegram delivery state, pairing |
+| **Mini App** | Telegram sign-in, glasses pairing, and a coordinator console with orders, new orders from the catalogue, assigning a picker, detail, revise, cancel, resolve, notes, timeline and CSV catalogue import |
 | **Engine** | Batch planning across totes in walking order, revisions that never overwrite picked work, mandatory returns, cancellation with full return, one open problem per order, idempotent commands, stale-command rejection |
 
 **Verified runs**, all in Even Hub simulator 0.9.5 against a real Postgres database:
@@ -57,7 +57,7 @@ See [docs/architecture.md](docs/architecture.md) for the codemap, invariants and
 - **Console revision:** a revision from the Mini App reached the glasses as "STOP — ORDER CHANGED".
 - **Batch of two:** started from More, picked in walking order across totes A and B (A, B, A, B, A), each tote reviewed and completed. Twelve events in that order.
 
-**248 automated tests** pass, most of them integration tests against real Postgres. They include two pickers claiming one order at once, an all-or-none batch claim, replayed and conflicting command IDs, forged task tokens and forged Telegram launch data. A live run against real Telegram and physical G2 hardware is still to come.
+**285 automated tests** pass, most of them integration tests against real Postgres. They include two pickers claiming one order at once, an all-or-none batch claim, a revision and a cancellation in the middle of a batch, replayed and conflicting command IDs, forged task tokens and forged Telegram launch data. A live run against real Telegram and physical G2 hardware is still to come.
 
 <p>
   <img src="docs/evidence/glasses-return.png" width="288" alt="Glasses: return 2 black T-shirts to bin A-03, tap to confirm actual return.">
