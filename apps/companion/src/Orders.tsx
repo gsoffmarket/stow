@@ -8,12 +8,12 @@ import { listOrders, type OrderRow, type View } from "./api.ts";
 import { copy } from "./copy.ts";
 import { usePolling } from "./polling.ts";
 
-type Props = { token: string; workspaceId: string; onOpen: (orderId: string) => void };
+type Props = { token: string; workspaceId: string; onOpen: (orderId: string) => void; onCatalogue: () => void };
 
 const views: View[] = ["needs_you", "active", "done"];
 const settle = { type: "spring", visualDuration: 0.35, bounce: 0.15 } as const;
 
-export function Orders({ token, workspaceId, onOpen }: Props) {
+export function Orders({ token, workspaceId, onOpen, onCatalogue }: Props) {
   const [view, setView] = useState<View>("active");
   const { data, isLive } = usePolling(() => listOrders(token, workspaceId, view), [view], 3000);
   const [needsYou, setNeedsYou] = useState(0);
@@ -25,9 +25,12 @@ export function Orders({ token, workspaceId, onOpen }: Props) {
 
   return (
     <section className="flex flex-col gap-4">
-      <div className="flex items-center justify-between">
+      <div className="flex items-center gap-3">
         <h1 className="text-2xl font-medium">{copy.orders.title}</h1>
-        <LiveDot isLive={isLive} />
+        <span className="mr-auto"><LiveDot isLive={isLive} /></span>
+        <button onClick={onCatalogue} className="min-h-10 rounded-[var(--radius-control)] border border-border-strong px-3 text-[13px] font-medium">
+          {copy.catalogue.open}
+        </button>
       </div>
       <div role="tablist" aria-label={copy.orders.title} className="grid grid-cols-3 gap-1 rounded-[10px] bg-surface-recessed p-1">
         {views.map((option) => (
