@@ -38,8 +38,11 @@ export type CallbackQuery = {
 /** Update is a raw Telegram update; only messages and button presses are handled. */
 export type Update = { readonly update_id: number; readonly message?: Message; readonly callback_query?: CallbackQuery };
 
-/** Button is one inline keyboard button; data comes back in the callback (max 64 bytes). */
-export type Button = { readonly text: string; readonly data: string };
+/**
+ * Button is one inline keyboard button: either data that comes back in a
+ * callback (max 64 bytes), or a link Telegram opens.
+ */
+export type Button = { readonly text: string; readonly data: string } | { readonly text: string; readonly url: string };
 
 export type BotApi = {
   getMe(): Promise<Result<{ id: number; username: string }>>;
@@ -52,9 +55,10 @@ export type BotApi = {
 function keyboard(buttons: readonly Button[][] | undefined): object {
   if (!buttons) return {};
   for (const button of buttons.flat()) {
-    if (new TextEncoder().encode(button.data).length > 64) throw new Error(`button data over 64 bytes: ${button.data.length} characters`);
+    if ("data" in button && new TextEncoder().encode(button.data).length > 64) throw new Error(`button data over 64 bytes: ${button.data.length} characters`);
   }
-  return { reply_markup: { inline_keyboard: buttons.map((row) => row.map((button) => ({ text: button.text, callback_data: button.data }))) } };
+  const markup = (button: Button) => ("data" in button ? { text: button.text, callback_data: button.data } : { text: button.text, url: button.url });
+  return { reply_markup: { inline_keyboard: buttons.map((row) => row.map(markup)) } };
 }
 
 /** createBotApi binds the client to one bot. baseUrl is overridable for tests. */

@@ -636,6 +636,13 @@ async function recoverExpiredLeases(pool: pg.Pool): Promise<void> {
   );
 }
 
+// Opens the bot's main Mini App on this order. Telegram does not allow
+// Mini App buttons in groups, so this is a t.me link; it needs the Main Mini
+// App set in BotFather, and opens the bot's chat otherwise.
+function orderLink(botUsername: string, orderId: string): string {
+  return `https://t.me/${botUsername}?startapp=order_${orderId}`;
+}
+
 async function deliverStatus(telegram: Telegram, row: DueRow): Promise<void> {
   const state = await statusOf(telegram.pool, row.workspace_id, row.order_id, row.connection_id);
   if (!row.payload.force && state.renderedVersion !== null && state.renderedVersion >= state.version) {
@@ -643,9 +650,10 @@ async function deliverStatus(telegram: Telegram, row: DueRow): Promise<void> {
     return settle(telegram.pool, row.id, "SENT", null);
   }
   const text = renderStatus(state.status);
+  const open = [[{ text: "Open in Stow", url: orderLink(telegram.botUsername, row.order_id) }]];
   const result = state.messageId
-    ? await telegram.api.editMessageText(row.chat_id, state.messageId, text)
-    : await telegram.api.sendMessage(row.chat_id, text, state.sourceMessageId ? Number(state.sourceMessageId) : undefined);
+    ? await telegram.api.editMessageText(row.chat_id, state.messageId, text, open)
+    : await telegram.api.sendMessage(row.chat_id, text, state.sourceMessageId ? Number(state.sourceMessageId) : undefined, open);
   await finish(telegram.pool, row, result, state.messageId, async (messageId) => {
     await telegram.pool.query(
       `insert into telegram_message_refs (workspace_id, connection_id, order_id, purpose, message_id, last_rendered_version)
