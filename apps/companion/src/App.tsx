@@ -1,7 +1,9 @@
 // The Mini App shell: sign in with Telegram's launch data, then show what
 // this person can do. Opening it with ?startapp=pair goes straight to pairing.
+// Opened in a browser instead of Telegram, the same address is Stow's public
+// landing page, loaded separately so the Mini App stays small.
 
-import { useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 import { signIn, type Session } from "./api.ts";
 import { copy } from "./copy.ts";
 import { Catalogue } from "./Catalogue.tsx";
@@ -10,6 +12,8 @@ import { Orders } from "./Orders.tsx";
 import { Pair } from "./Pair.tsx";
 import { launchData, startParam } from "./telegram.ts";
 import { Card, GhostButton, Mark, Page, PrimaryButton } from "./ui.tsx";
+
+const Landing = lazy(() => import("./Landing.tsx"));
 
 type State = { kind: "outside" } | { kind: "signing-in" } | { kind: "failed" } | { kind: "ready"; session: Session };
 
@@ -30,13 +34,20 @@ export function App() {
     };
   }, [attempt]);
 
+  if (state.kind === "outside") {
+    return (
+      <Suspense fallback={null}>
+        <Landing />
+      </Suspense>
+    );
+  }
+
   return (
     <Page>
       <header className="flex items-center gap-2.5">
         <Mark />
         <span className="text-[15px] font-semibold tracking-[0.01em]">Stow</span>
       </header>
-      {state.kind === "outside" && <Message title={copy.openFromTelegram.title} body={copy.openFromTelegram.body} />}
       {state.kind === "signing-in" && <p className="text-text-secondary" role="status">{copy.signingIn}</p>}
       {state.kind === "failed" && (
         <Message title={copy.signInFailed.title} body={copy.signInFailed.body}>
