@@ -21,6 +21,11 @@ services:
   api:
     build: { context: .., dockerfile: deploy/Dockerfile, target: api }
     restart: unless-stopped
+    # The edge may also sit on a shared proxy network where another project
+    # answers to "api"; this alias is the name deploy/Caddyfile uses.
+    networks:
+      default:
+        aliases: [stow-api]
     depends_on:
       postgres: { condition: service_healthy }
     environment:

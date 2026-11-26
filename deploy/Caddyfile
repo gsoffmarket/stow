@@ -3,10 +3,10 @@
 	encode zstd gzip
 
 	handle /v1/* {
-		reverse_proxy api:8787
+		reverse_proxy stow-api:8787
 	}
 	handle /health/* {
-		reverse_proxy api:8787
+		reverse_proxy stow-api:8787
 	}
 
 	# The Even Hub glasses app, loaded by the Even Realities app on the phone.
