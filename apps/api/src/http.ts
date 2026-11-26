@@ -12,8 +12,10 @@ import { z } from "zod";
 import { outstandingPick, outstandingReturn, type Order, type Task } from "@stow/order-engine";
 import { runCommand, workerView, type Command, type Role } from "./fulfilment.ts";
 import * as devices from "./devices.ts";
-import { markRead, quickReplies, sendReply } from "./messages.ts";
+import { markRead, postNote, quickReplies, sendReply } from "./messages.ts";
+import { listOrders, orderDetail } from "./console.ts";
 import { memberships, sessionUser, startSession, verifyLaunchData } from "./identity.ts";
+import type { Actor } from "./fulfilment.ts";
 
 export type HttpOptions = {
   readonly pool: pg.Pool;
@@ -30,6 +32,47 @@ type Device = { readonly workspaceId: string; readonly memberId: string; readonl
 const uuid = z.uuid();
 const counter = z.string().regex(/^[0-9]{1,18}$/).transform(Number);
 const expected = { orderId: uuid, expectedRevision: z.number().int().min(1), expectedVersion: counter };
+const reason = z.string().trim().min(1).max(280);
+const consoleCommandBody = z.discriminatedUnion("type", [
+  z.strictObject({
+    commandId: uuid,
+    type: z.literal("REVISE_ORDER"),
+    ...expected,
+    payload: z.strictObject({
+      reason,
+      changes: z
+        .array(
+          z.discriminatedUnion("kind", [
+            z.strictObject({ kind: z.literal("SET_QUANTITY"), lineId: uuid, quantity: z.number().int().min(0).max(10_000) }),
+            z.strictObject({ kind: z.literal("ADD_LINE"), sku: z.string().trim().toUpperCase().min(1).max(64), quantity: z.number().int().min(1).max(10_000) }),
+          ]),
+        )
+        .min(1)
+        .max(100),
+    }),
+  }),
+  z.strictObject({ commandId: uuid, type: z.literal("REQUEST_CANCEL"), ...expected, payload: z.strictObject({ reason }) }),
+  z.strictObject({
+    commandId: uuid,
+    type: z.literal("RESOLVE_EXCEPTION"),
+    ...expected,
+    payload: z.strictObject({
+      reason,
+      resolution: z.discriminatedUnion("kind", [
+        z.strictObject({ kind: z.literal("RESUME") }),
+        z.strictObject({ kind: z.literal("REDUCE"), quantity: z.number().int().min(0).max(10_000) }),
+        z.strictObject({
+          kind: z.literal("SUBSTITUTE"),
+          quantity: z.number().int().min(0).max(10_000),
+          sku: z.string().trim().toUpperCase().min(1).max(64),
+          substituteQuantity: z.number().int().min(1).max(10_000),
+        }),
+        z.strictObject({ kind: z.literal("CANCEL") }),
+      ]),
+    }),
+  }),
+]);
+
 const commandBody = z.discriminatedUnion("type", [
   z.strictObject({ commandId: uuid, type: z.literal("CLAIM_ORDER"), ...expected, payload: z.strictObject({ toteId: z.string().min(1).max(16).nullable() }) }),
   z.strictObject({
@@ -138,6 +181,47 @@ export function buildHttp(options: HttpOptions): FastifyInstance {
     const result = await devices.approve(options.pool, telegramUserId, parsed.data.workspaceId, parsed.data.code);
     if (result.ok) return ok(reply, request, { label: result.label });
     return fail(reply, request, result.code === "PAIRING_EXPIRED" ? 410 : result.code === "ROLE_REQUIRED" ? 403 : 404, result.code);
+  });
+
+  // The coordinator console in the Mini App: the same command runner, roles
+  // and engine checks as Telegram, reached with a Mini App session.
+  app.get<{ Params: { wid: string }; Querystring: { view?: string } }>("/v1/workspaces/:wid/orders", async (request, reply) => {
+    const actor = await coordinator(request, reply, options.pool);
+    if (!actor) return reply;
+    const view = z.enum(["needs_you", "active", "done"]).catch("active").parse(request.query.view);
+    return ok(reply, request, { view, orders: await listOrders(options.pool, actor.workspaceId, view) });
+  });
+
+  app.get<{ Params: { wid: string; oid: string } }>("/v1/workspaces/:wid/orders/:oid", async (request, reply) => {
+    const actor = await coordinator(request, reply, options.pool);
+    if (!actor) return reply;
+    const detail = uuid.safeParse(request.params.oid).success ? await orderDetail(options.pool, actor.workspaceId, request.params.oid) : null;
+    return detail ? ok(reply, request, detail) : fail(reply, request, 404, "NOT_FOUND");
+  });
+
+  app.post<{ Params: { wid: string; oid: string } }>("/v1/workspaces/:wid/orders/:oid/notes", async (request, reply) => {
+    const actor = await coordinator(request, reply, options.pool);
+    if (!actor) return reply;
+    const parsed = z.strictObject({ body: z.string().trim().min(1).max(280) }).safeParse(request.body);
+    if (!parsed.success || !uuid.safeParse(request.params.oid).success) return fail(reply, request, 400, "INVALID_INPUT");
+    const posted = await postNote(options.pool, actor.workspaceId, request.params.oid, actor.memberId, parsed.data.body);
+    return posted === "POSTED" ? ok(reply, request, { posted: true }) : fail(reply, request, 409, "TERMINAL_ORDER");
+  });
+
+  app.post<{ Params: { wid: string } }>("/v1/workspaces/:wid/console/commands", async (request, reply) => {
+    const actor = await coordinator(request, reply, options.pool);
+    if (!actor) return reply;
+    const parsed = consoleCommandBody.safeParse(request.body);
+    if (!parsed.success) return fail(reply, request, 400, "INVALID_INPUT");
+    const body = parsed.data;
+    const base = { orderId: body.orderId, revision: body.expectedRevision, version: body.expectedVersion };
+    const command: Command =
+      body.type === "REVISE_ORDER" ? { type: "REVISE_ORDER", ...base, reason: body.payload.reason, changes: body.payload.changes }
+      : body.type === "REQUEST_CANCEL" ? { type: "REQUEST_CANCEL", ...base, reason: body.payload.reason }
+      : { type: "RESOLVE_EXCEPTION", ...base, reason: body.payload.reason, resolution: body.payload.resolution };
+    const result = await runCommand(options.pool, actor, body.commandId, command);
+    if (result.status !== 200) return fail(reply, request, result.status, result.body.code);
+    return ok(reply, request, { commandId: body.commandId, ...result.body });
   });
 
   app.get<{ Params: { wid: string } }>("/v1/workspaces/:wid/worker/snapshot", async (request, reply) => {
@@ -250,6 +334,19 @@ async function miniAppUser(request: FastifyRequest, reply: FastifyReply, pool: p
   const user = token ? await sessionUser(pool, token) : null;
   if (!user) fail(reply, request, 401, "AUTH_REQUIRED");
   return user;
+}
+
+// A Mini App session acting as a coordinator or owner in the workspace named
+// by the path. Anyone else gets the same 404 as a workspace that does not exist.
+async function coordinator(request: FastifyRequest<{ Params: { wid: string } }>, reply: FastifyReply, pool: pg.Pool): Promise<Actor | null> {
+  const telegramUserId = await miniAppUser(request, reply, pool);
+  if (!telegramUserId) return null;
+  const membership = (await memberships(pool, telegramUserId)).find((m) => m.workspaceId === request.params.wid);
+  if (!membership || (membership.role !== "COORDINATOR" && membership.role !== "OWNER")) {
+    fail(reply, request, 404, "NOT_FOUND");
+    return null;
+  }
+  return { workspaceId: membership.workspaceId, memberId: membership.memberId, role: membership.role };
 }
 
 /** hashToken is how device tokens are stored and looked up. */
