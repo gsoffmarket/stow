@@ -84,7 +84,7 @@ export type Action =
   | { readonly type: "MARK_READ"; readonly noteId: string }
   | { readonly type: "REPLY"; readonly replyId: string; readonly noteId: string | null }
   | { readonly type: "CONFIRM"; readonly quantity: number }
-  | { readonly type: "START_BATCH"; readonly size: number }
+  | { readonly type: "REVIEW_BATCH" | "START_BATCH"; readonly size: number }
   | { readonly type: "ACK_RESOLUTION"; readonly exceptionId: string }
   | { readonly type: "REPORT"; readonly report: ReportType };
 
@@ -234,7 +234,7 @@ export function screenFor(snapshot: Snapshot | null, link: Link, dismissedRef: s
       const lines = snapshot.order?.lines ?? [];
       const units = lines.reduce((sum, line) => sum + line.requested, 0);
       const size = `${lines.length} ${lines.length === 1 ? "LINE" : "LINES"} · ${units} ${units === 1 ? "UNIT" : "UNITS"}`;
-      const batches = snapshot.batchOffer.slice(1).map((_, index) => ({ label: `BATCH OF ${index + 2}`, action: { type: "START_BATCH", size: index + 2 } as Action }));
+      const batches = snapshot.batchOffer.slice(1).map((_, index) => ({ label: `BATCH OF ${index + 2}`, action: { type: "REVIEW_BATCH", size: index + 2 } as Action }));
       const footer = batches.length > 0 ? "TAP TO START · SWIPE FOR BATCH" : "TAP TO START";
       return screen(`${ref}   NEW ORDER`, `${ref}\n${size}\nReady to pick.`, footer, { type: "CLAIM" }, batches);
     }
@@ -253,6 +253,17 @@ export function screenFor(snapshot: Snapshot | null, link: Link, dismissedRef: s
     case "REVIEW_RELEASE":
       return screen(`${ref}   RELEASE`, "TOTE EMPTY\nHand the order back to the queue.", "TAP TO RELEASE · SWIPE TO KEEP", { type: "RELEASE" }, [keepOrder]);
   }
+}
+
+const toteLabels = ["A", "B", "C", "D", "E"] as const;
+
+/**
+ * batchScreen shows which order goes in which tote before a batch starts, so
+ * the picker labels the totes first (PRD §7.6). A swipe goes back to the offer.
+ */
+export function batchScreen(snapshot: Snapshot, size: number): Screen {
+  const mapping = snapshot.batchOffer.slice(0, size).map((order, index) => `TOTE ${toteLabels[index]}  ${order.ref}`);
+  return screen(`BATCH OF ${size}   TOTES`, [...mapping, "Label each tote, then start."].join("\n"), "TAP TO START · SWIPE TO GO BACK", { type: "START_BATCH", size });
 }
 
 /**
