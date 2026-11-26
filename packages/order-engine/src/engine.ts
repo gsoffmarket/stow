@@ -95,8 +95,9 @@ export function outstandingReturn(line: Line): number {
 export function plan(order: Order, workerId: string): Plan {
   if (order.terminal) return { kind: "TERMINAL", terminal: order.terminal };
   const assignment = order.assignment;
-  if (!assignment || !assignment.isAccepted) return { kind: "OFFER" };
+  if (!assignment) return { kind: "OFFER" };
   if (assignment.workerId !== workerId) return { kind: "CONFLICT" };
+  if (!assignment.isAccepted) return { kind: "OFFER" };
   if (order.isPaused) return { kind: "PAUSED" };
   // A resolution is acknowledged as a whole, including any revision it made,
   // so it is shown before a plain revision notice.
@@ -171,13 +172,15 @@ export type Expected = { readonly revision: number; readonly version: number };
 export type Confirmation = Expected & { readonly kind: TaskKind; readonly lineId: string; readonly quantity: number };
 
 /**
- * claim gives a queued order to the worker. Claiming is explicit acceptance of
- * the current revision, so the worker starts with nothing to acknowledge.
+ * claim gives a queued order, or one assigned to this worker, to the worker.
+ * Claiming is explicit acceptance of the current revision, so the worker
+ * starts with nothing to acknowledge.
  */
 export function claim(order: Order, workerId: string, toteId: string | null, expected: Expected): Outcome {
   const stale = checkFresh(order, expected);
   if (stale) return stale;
-  if (order.assignment) return { ok: false, code: "ASSIGNMENT_CONFLICT" };
+  const isOffered = !order.assignment || (order.assignment.workerId === workerId && !order.assignment.isAccepted);
+  if (!isOffered) return { ok: false, code: "ASSIGNMENT_CONFLICT" };
   const assignment = { workerId, toteId, isAccepted: true, ackRevision: order.revision };
   return { ok: true, order: { ...order, assignment, version: order.version + 1 } };
 }
@@ -417,6 +420,21 @@ export function prepareRelease(order: Order, workerId: string, expected: Expecte
   if (order.exception) return { ok: false, code: "OPEN_EXCEPTION" };
   if (order.isPaused || order.isCancelRequested || order.isReleaseRequested) return { ok: false, code: "INVALID_TRANSITION" };
   return { ok: true, order: { ...order, isReleaseRequested: true, version: order.version + 1 } };
+}
+
+/**
+ * assign offers an order to one picker, who still has to accept it on the
+ * glasses: a coordinator never starts physical work on someone's behalf. An
+ * order not yet accepted can be reassigned; one being picked cannot.
+ */
+export function assign(order: Order, workerId: string, expected: Expected): Outcome {
+  const stale = checkFresh(order, expected);
+  if (stale) return stale;
+  if (order.assignment?.isAccepted) return { ok: false, code: "ASSIGNMENT_CONFLICT" };
+  if (order.assignment?.workerId === workerId) return { ok: false, code: "NO_CHANGE" };
+  if (order.isCancelRequested) return { ok: false, code: "INVALID_TRANSITION" };
+  const assignment = { workerId, toteId: null, isAccepted: false, ackRevision: order.revision };
+  return { ok: true, order: { ...order, assignment, version: order.version + 1 } };
 }
 
 /** cancelRelease keeps the order after all; units already returned are picked again. */
