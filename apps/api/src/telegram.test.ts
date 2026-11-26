@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest";
 import type { BotApi, Message, Result, Update } from "@stow/telegram/botapi";
 import { createTestDatabase, type TestDatabase } from "./db/testdb.ts";
-import { runPickerCommand, workerView } from "./fulfilment.ts";
+import { runCommand, workerView } from "./fulfilment.ts";
 import { deliverOutbox, hashCode, processInbox, receive, type Telegram } from "./telegram.ts";
 
 // Telegram is a third-party boundary: this stand-in records calls and answers
@@ -150,11 +150,11 @@ describe("status delivery", () => {
     await deliverOutbox(telegram);
     const view = await workerView(db.pool, ws.workspaceId, ws.picker);
     const orderId = view.order!.id;
-    const actor = { workspaceId: ws.workspaceId, workerId: ws.picker };
-    await runPickerCommand(db.pool, actor, randomUUID(), { type: "CLAIM_ORDER", orderId, revision: 1, version: 1, toteId: "A" });
+    const actor = { workspaceId: ws.workspaceId, memberId: ws.picker, role: "PICKER" as const };
+    await runCommand(db.pool, actor, randomUUID(), { type: "CLAIM_ORDER", orderId, revision: 1, version: 1, toteId: "A" });
     const task = await workerView(db.pool, ws.workspaceId, ws.picker);
     const lineId = task.plan.kind === "TASK" ? task.plan.task.lineId : "";
-    await runPickerCommand(db.pool, actor, randomUUID(), { type: "CONFIRM_TASK", orderId, revision: 1, version: 2, kind: "PICK", lineId, quantity: 2 });
+    await runCommand(db.pool, actor, randomUUID(), { type: "CONFIRM_TASK", orderId, revision: 1, version: 2, kind: "PICK", lineId, quantity: 2 });
     calls = [];
     return ws;
   }
