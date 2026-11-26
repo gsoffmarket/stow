@@ -199,3 +199,13 @@ export function screenFor(snapshot: Snapshot | null, link: Link, dismissedRef: s
       return screen(`${ref}   RELEASE`, "Waiting for the coordinator.", "TAP TO REFRESH", refresh);
   }
 }
+
+/**
+ * pairingScreen is shown until the glasses hold a device token: a code to
+ * approve from Stow in Telegram. Tap gets a fresh code.
+ */
+export function pairingScreen(code: string | null, link: Link): Screen {
+  if (link === "offline") return screen("STOW   PAIR", "NOT CONNECTED\nCannot reach Stow.", "TAP TO RETRY", refresh);
+  if (!code) return screen("STOW   PAIR", "GETTING A CODE…", "", null);
+  return screen("STOW   PAIR", `CODE  ${code}\n\nOpen Stow in Telegram\nand enter this code.`, "TAP FOR A NEW CODE", refresh);
+}
