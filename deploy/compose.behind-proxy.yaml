@@ -1,0 +1,25 @@
+# For a server where another reverse proxy already owns ports 80 and 443.
+# Stow publishes no ports: its edge serves plain HTTP on the proxy's Docker
+# network under the alias stow-edge, and the shared proxy terminates HTTPS:
+#
+#   stow.example.com {
+#   	reverse_proxy stow-edge:80
+#   }
+#
+# From the repository root:
+#   docker compose -f deploy/compose.yaml -f deploy/compose.behind-proxy.yaml --env-file deploy/.env up -d --build
+services:
+  edge:
+    ports: !reset []
+    environment:
+      # An http:// site address makes Caddy serve HTTP only and skip certificates.
+      STOW_HOST: http://${STOW_HOST}
+    networks:
+      default:
+      proxy:
+        aliases: [stow-edge]
+
+networks:
+  proxy:
+    external: true
+    name: ${STOW_PROXY_NETWORK:?set STOW_PROXY_NETWORK to the shared proxy's Docker network}
